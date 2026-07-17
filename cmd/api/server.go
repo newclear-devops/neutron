@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"gopkg.in/yaml.v3"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -468,11 +470,9 @@ func parseWebhook(platform string, body io.ReadCloser, cb model.CodeBase, repoUr
 		if err != nil {
 			return ph, err
 		}
-		pipeline, err := p.Parse()
-		if err != nil {
-			return ph, fmt.Errorf("failed to parse pipeline: %w", err)
-		}
-		ph.pipeline = pipeline
+		// Populate webhook-derived fields first; these come from the parsed body
+		// and are valid even if the neutron.yaml fetch below fails (e.g. 404),
+		// so the caller can still fall back to a default pipeline.
 		ph.trigger = p.Trigger
 		ph.codeSha = p.CodeSha
 		ph.reportSha = p.ReportSha
@@ -480,16 +480,16 @@ func parseWebhook(platform string, body io.ReadCloser, cb model.CodeBase, repoUr
 		ph.codeRef = codeRefForTrigger(p.Trigger, p.Request.Ref)
 		ph.projectId = p.Request.Project.Id
 		ph.sourceUrl = parser.BuildSourceUrl("GitLab", p.Trigger, cb.Url, repoUrl, p.Request.Ref, p.CodeSha, p.Request.Attributes.Iid)
-	case "Codeup":
-		p, err := codeup.NewCodeupParser(body, cb.Url, cb.Token, cb.SkipTLSVerify)
-		if err != nil {
-			return ph, err
-		}
 		pipeline, err := p.Parse()
 		if err != nil {
 			return ph, fmt.Errorf("failed to parse pipeline: %w", err)
 		}
 		ph.pipeline = pipeline
+	case "Codeup":
+		p, err := codeup.NewCodeupParser(body, cb.Url, cb.Token, cb.SkipTLSVerify)
+		if err != nil {
+			return ph, err
+		}
 		ph.trigger = p.Trigger
 		ph.codeSha = p.CodeSha
 		ph.reportSha = p.ReportSha
@@ -503,10 +503,33 @@ func parseWebhook(platform string, body io.ReadCloser, cb model.CodeBase, repoUr
 			ph.projectId = p.Request.Attributes.ProjectId
 		}
 		ph.sourceUrl = parser.BuildSourceUrl("Codeup", p.Trigger, cb.Url, repoUrl, p.Request.Ref, p.CodeSha, p.Request.Attributes.Iid)
+		pipeline, err := p.Parse()
+		if err != nil {
+			return ph, fmt.Errorf("failed to parse pipeline: %w", err)
+		}
+		ph.pipeline = pipeline
 	default:
 		return ph, fmt.Errorf("unsupported platform: %s", platform)
 	}
 	return ph, nil
+}
+
+// defaultPipeline loads and parses the globally-configured default pipeline,
+// used as a fallback when a repository has no neutron.yaml. It errors when no
+// default is configured so the caller can surface a clear 4xx.
+func (s *Server) defaultPipeline() (model.Pipeline, error) {
+	content, err := s.repo.GetSetting(internal.SettingDefaultPipeline)
+	if err != nil {
+		return model.Pipeline{}, fmt.Errorf("failed to load default pipeline: %w", err)
+	}
+	if strings.TrimSpace(content) == "" {
+		return model.Pipeline{}, fmt.Errorf("neutron.yaml not found and no default pipeline configured")
+	}
+	var pipeline model.Pipeline
+	if err := yaml.Unmarshal([]byte(content), &pipeline); err != nil {
+		return model.Pipeline{}, fmt.Errorf("default pipeline is invalid yaml: %w", err)
+	}
+	return pipeline, nil
 }
 
 func (s *Server) handleWebhook(c *gin.Context) {
@@ -525,8 +548,20 @@ func (s *Server) handleWebhook(c *gin.Context) {
 
 	ph, err := parseWebhook(platform, c.Request.Body, s.config.BaseConfig[platform], webhookConfig.RepoUrl)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
+		// Fall back to the configured default pipeline when the repo has no
+		// neutron.yaml; other errors (auth, network, malformed) still fail.
+		if errors.Is(err, parser.ErrPipelineNotFound) {
+			defaultPipeline, derr := s.defaultPipeline()
+			if derr != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": derr.Error()})
+				return
+			}
+			log.Printf("webhook %s: repo %s has no neutron.yaml, using default pipeline", id, webhookConfig.RepoUrl)
+			ph.pipeline = defaultPipeline
+		} else {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 	}
 
 	var jobs []string
@@ -673,8 +708,18 @@ func (s *Server) handleTrigger(c *gin.Context) {
 	// Fetch neutron.yaml from repo at given ref
 	pipeline, err := parser.FetchPipeline(platform, req.RepoUrl, req.Ref, baseCfg.Url, baseCfg.Token, baseCfg.SkipTLSVerify)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("failed to fetch pipeline: %v", err)})
-		return
+		// Fall back to the configured default pipeline when the repo has no neutron.yaml.
+		if errors.Is(err, parser.ErrPipelineNotFound) {
+			pipeline, err = s.defaultPipeline()
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
+			log.Printf("trigger: repo %s has no neutron.yaml at ref %s, using default pipeline", req.RepoUrl, req.Ref)
+		} else {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("failed to fetch pipeline: %v", err)})
+			return
+		}
 	}
 
 	// Find the specified job

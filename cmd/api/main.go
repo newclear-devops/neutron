@@ -16,12 +16,14 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"gopkg.in/yaml.v3"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
 	"neutron/internal"
 	"neutron/internal/ccwork"
+	"neutron/internal/model"
 	"neutron/internal/notify"
 )
 
@@ -190,6 +192,45 @@ func main() {
 			return
 		}
 		if err := repo.DeleteSnippet(name); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+
+	// --- Default pipeline (fallback when a repo has no neutron.yaml) ---
+	// GET is shared by the SPA editor and the pod-side runner callback.
+
+	r.GET("/api/default-pipeline", func(c *gin.Context) {
+		content, err := repo.GetSetting(internal.SettingDefaultPipeline)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"content": content})
+	})
+
+	r.PUT("/api/default-pipeline", func(c *gin.Context) {
+		var req struct {
+			Content string `json:"content"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		// Non-empty content must parse as a valid pipeline. Empty disables fallback.
+		if strings.TrimSpace(req.Content) != "" {
+			var pipeline model.Pipeline
+			if err := yaml.Unmarshal([]byte(req.Content), &pipeline); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid pipeline yaml: %v", err)})
+				return
+			}
+			if len(pipeline.Jobs) == 0 {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "pipeline defines no jobs"})
+				return
+			}
+		}
+		if err := repo.SetSetting(internal.SettingDefaultPipeline, req.Content); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}

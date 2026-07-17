@@ -38,7 +38,9 @@ go test ./...
 - `POST /api/report/:jobName` — runners push status back to API server for persistence
 - `POST /api/report/:jobName/link` — set a test report URL for a job (`{"report_url": "..."}`)
 - `POST /api/jobs/:jobName/rerun` — rerun a webhook-created job by recreating an identical K8s Job from its persisted spec (same commit/params/trigger, reports to platform like the original). Only jobs with a stored spec are rerunnable.
-- SPA: `cmd/api/static/index.html` — vanilla JS with hash-based routing (#/, #/projects, #/project/:id, #/status/:name)
+- `GET /api/default-pipeline` — returns the global default pipeline (`{"content": "..."}`, empty if unset). Shared by the SPA editor and the pod-side runner fallback.
+- `PUT /api/default-pipeline` — set the global default pipeline (`{"content": "..."}`). Validates non-empty content parses to a `model.Pipeline` with at least one job; empty content disables the fallback.
+- SPA: `cmd/api/static/index.html` — vanilla JS with hash-based routing (#/, #/projects, #/project/:id, #/status/:name, #/snippets, #/default-pipeline)
 
 **GitLab Runner** (`cmd/gitlab-runner/`) — runs inside K8s pods for GitLab projects:
 - Reads config from environment variables (set by API server when creating the Job)
@@ -52,9 +54,9 @@ go test ./...
 ### Data Flow
 
 1. Webhook → `/webhook/:id` (GitLab or Codeup)
-2. API server auto-detects platform, parses webhook, fetches `neutron.yaml` via platform API
+2. API server auto-detects platform, parses webhook, fetches `neutron.yaml` via platform API. If the repo has no `neutron.yaml` (platform API returns 404), it falls back to the global default pipeline (see **Default Pipeline Fallback**); if no default is configured, the request fails.
 3. API server creates K8s Job with platform-appropriate runner binary
-4. Main container runs runner → reads `neutron.yaml` → executes steps → reports status to both the platform API and Neutron API (`/api/report/:jobName`)
+4. Main container runs runner → reads `neutron.yaml` (or, if absent, fetches the global default via `GET /api/default-pipeline`) → executes steps → reports status to both the platform API and Neutron API (`/api/report/:jobName`)
 5. Status queries (`/api/status/:jobName`) return from DB for completed jobs, or K8s API + persist to DB for active jobs
 
 ### Key Packages
@@ -80,6 +82,7 @@ Tables auto-migrated by GORM:
 - `neutron_job` (id, project_id, name, status, notify, spec, completed, completed_at) — `notify` is JSON-encoded `model.Notify`; `spec` is JSON-encoded `model.JobSpec` (rerun snapshot), captured from the job's `neutron.yaml`/webhook at trigger time
 - `neutron_pod` (id, job_id, pod_name, pod_uid, phase)
 - `neutron_job_report` (id, job_name, report_url, created_at) — test report link per job
+- `neutron_setting` (key, value, updated_at) — generic key/value store for global config; currently holds the default pipeline under key `default_pipeline` (see **Default Pipeline Fallback**)
 
 ### Configuration
 
@@ -167,6 +170,24 @@ Snippets are reusable shell scripts stored in MySQL and exposed as `curl | bash`
 - Delete with `confirm()` dialog
 
 **Repository methods** (`internal/repo.go` `Snippet` struct + CRUD): `ListSnippets`, `GetSnippetByName`, `CreateSnippet`, `UpdateSnippet` (partial map with `updated_at`), `DeleteSnippet`.
+
+### Default Pipeline Fallback
+
+A single **global** default `neutron.yaml` used when a repository has no `neutron.yaml` of its own. It applies to all registered projects and is edited in the UI.
+
+**Trigger condition:** only when the platform file API returns **404** (file missing). Both GitLab and Codeup return 404 for a missing file, so detection is platform-agnostic. Auth/network/malformed errors are not caught — they still fail as before.
+
+**Mechanism (two consumers of the same stored default):**
+1. **API server** (webhook / trigger, same process) reads the default directly from the DB (`GetSetting`) to decide which jobs to launch and match triggers. `parser.Base.Parse()` wraps the 404 in the sentinel `parser.ErrPipelineNotFound`; `handleWebhook` / `handleTrigger` detect it with `errors.Is` and call `Server.defaultPipeline()` (`cmd/api/server.go`). If no default is configured, the request returns 400. `parseWebhook` populates the webhook-derived fields (trigger, SHA, source URL, …) *before* the pipeline fetch, so they remain valid on a 404 and the fallback pipeline can be substituted.
+2. **Runner** (pod, separate process) reads `/repo/neutron.yaml`; if the cloned repo lacks it, `service.NewRunner` calls `fetchDefaultPipeline(apiUrl)` → `GET /api/default-pipeline` (reusing the existing `NEUTRON_API_URL` env, no extra config) and uses the returned content. If none is configured, it `log.Fatal`s (unchanged "no pipeline" semantics). Fallback usage is logged on both the server and runner side.
+
+**Storage:** `neutron_setting` key/value table, key `default_pipeline` (const `internal.SettingDefaultPipeline`). Repository methods: `GetSetting(key)` (empty string when unset), `SetSetting(key, value)` (upsert via `clause.OnConflict`).
+
+**API:** `GET /api/default-pipeline` (shared by SPA and runner), `PUT /api/default-pipeline` (validates the YAML parses to a pipeline with ≥1 job; empty content disables the fallback).
+
+**SPA frontend** (hash route `#/default-pipeline`): a single-page YAML editor (`renderDefaultPipeline`) — a `<textarea>` prefilled from `GET`, a Save button that `PUT`s after a `confirm()` ("This default configuration will be used for all repositories missing a neutron.yaml. Save?").
+
+**Note:** the default is resolved at runtime and **not snapshotted** into `JobSpec`. A rerun of a fallback job therefore uses the *current* default, not the one active at trigger time (acceptable; defaults change rarely).
 
 ## Conventions
 
