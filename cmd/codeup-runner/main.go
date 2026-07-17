@@ -38,6 +38,6 @@ func main() {
 		composite = reporter.NewComposite(codeupReporter, neutronReporter)
 	}
 
-	runner := service.NewRunner("/repo", triggerType, jobName, composite, skipTriggerCheck)
+	runner := service.NewRunner("/repo", triggerType, jobName, composite, apiUrl, skipTriggerCheck)
 	runner.Run()
 }

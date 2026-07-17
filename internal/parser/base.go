@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"gopkg.in/yaml.v3"
 	"io"
@@ -15,6 +16,12 @@ import (
 )
 
 const MaxBodySize = 1 << 20 // 1MB
+
+// ErrPipelineNotFound signals that neutron.yaml does not exist in the repository
+// (the platform file API returned 404). Callers can detect it with errors.Is to
+// fall back to a configured default pipeline. Both GitLab and Codeup return 404
+// for a missing file, so this is platform-agnostic.
+var ErrPipelineNotFound = errors.New("neutron.yaml not found in repository")
 
 type FileResponse struct {
 	Content string `json:"content"`
@@ -50,7 +57,7 @@ func (b *Base) Parse() (model.Pipeline, error) {
 	}
 	defer res.Body.Close()
 	if res.StatusCode == http.StatusNotFound {
-		return model.Pipeline{}, fmt.Errorf("neutron.yaml not found in repository (ref: %s)", b.CodeSha)
+		return model.Pipeline{}, fmt.Errorf("%w (ref: %s)", ErrPipelineNotFound, b.CodeSha)
 	}
 	if res.StatusCode == http.StatusUnauthorized || res.StatusCode == http.StatusForbidden {
 		return model.Pipeline{}, fmt.Errorf("authentication failed when accessing API (status: %d)", res.StatusCode)

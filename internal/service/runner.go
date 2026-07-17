@@ -1,13 +1,16 @@
 package service
 
 import (
+	"encoding/json"
 	"fmt"
 	"gopkg.in/yaml.v3"
 	"log"
+	"net/http"
 	"neutron/internal/model"
 	"os"
 	"os/exec"
 	"path"
+	"time"
 )
 
 type Runner struct {
@@ -18,10 +21,44 @@ type Runner struct {
 	Reporter   model.Reporter
 }
 
-func NewRunner(workingDir string, triggerType string, jobName string, reporter model.Reporter, skipTriggerCheck ...bool) *Runner {
+// fetchDefaultPipeline retrieves the globally-configured default neutron.yaml
+// from the Neutron API. Used as a fallback when the repository has no
+// neutron.yaml. Returns empty content (not an error) when none is configured.
+func fetchDefaultPipeline(apiUrl string) ([]byte, error) {
+	if apiUrl == "" {
+		return nil, fmt.Errorf("NEUTRON_API_URL not set")
+	}
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Get(apiUrl + "/api/default-pipeline")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("default-pipeline API returned status %d", resp.StatusCode)
+	}
+	var body struct {
+		Content string `json:"content"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return nil, err
+	}
+	return []byte(body.Content), nil
+}
+
+func NewRunner(workingDir string, triggerType string, jobName string, reporter model.Reporter, apiUrl string, skipTriggerCheck ...bool) *Runner {
 	data, err := os.ReadFile(path.Join(workingDir, "neutron.yaml"))
 	if err != nil {
-		log.Fatal(err)
+		// Repo has no neutron.yaml — fall back to the globally-configured
+		// default pipeline fetched from the Neutron API.
+		fallback, ferr := fetchDefaultPipeline(apiUrl)
+		if ferr != nil {
+			log.Fatalf("neutron.yaml not found and default pipeline unavailable: %v (read error: %v)", ferr, err)
+		}
+		if len(fallback) == 0 {
+			log.Fatalf("neutron.yaml not found and no default pipeline configured")
+		}
+		data = fallback
 	}
 	var pipeline model.Pipeline
 	err = yaml.Unmarshal(data, &pipeline)

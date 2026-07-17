@@ -3,12 +3,14 @@ package internal
 import (
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"log"
 	"neutron/internal/model"
 	"time"
 
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 	"gorm.io/gorm/logger"
 )
 
@@ -76,6 +78,21 @@ func (Snippet) TableName() string {
 	return "neutron_snippet"
 }
 
+// Setting is a generic key/value store for global configuration (e.g. the
+// default pipeline used when a repository has no neutron.yaml).
+type Setting struct {
+	Key       string     `gorm:"column:key;type:varchar(64);primaryKey" json:"key"`
+	Value     string     `gorm:"column:value;type:longtext" json:"value"`
+	UpdatedAt *time.Time `gorm:"column:updated_at" json:"updated_at"`
+}
+
+func (Setting) TableName() string {
+	return "neutron_setting"
+}
+
+// SettingDefaultPipeline is the Setting key holding the default neutron.yaml.
+const SettingDefaultPipeline = "default_pipeline"
+
 type JobStatus struct {
 	WebhookType string `json:"webhook_type"`
 	RepoUrl     string `json:"repo_url"`
@@ -101,7 +118,7 @@ func NewRepository(config model.Config) *Repository {
 	}
 
 	// Auto-migrate tables
-	if err := db.AutoMigrate(&PipelineProject{}, &PipelineJob{}, &PipelinePod{}, &JobReport{}, &Snippet{}); err != nil {
+	if err := db.AutoMigrate(&PipelineProject{}, &PipelineJob{}, &PipelinePod{}, &JobReport{}, &Snippet{}, &Setting{}); err != nil {
 		log.Fatalf("failed to auto-migrate database: %v", err)
 	}
 
@@ -271,4 +288,28 @@ func (r *Repository) UpdateSnippet(name string, updates map[string]interface{}) 
 
 func (r *Repository) DeleteSnippet(name string) error {
 	return r.db.Where("name = ?", name).Delete(&Snippet{}).Error
+}
+
+// --- Settings ---
+
+// GetSetting returns the value for a key, or an empty string if the key is unset.
+func (r *Repository) GetSetting(key string) (string, error) {
+	var setting Setting
+	result := r.db.Where("`key` = ?", key).First(&setting)
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return "", nil
+		}
+		return "", result.Error
+	}
+	return setting.Value, nil
+}
+
+// SetSetting upserts a key/value pair, stamping updated_at.
+func (r *Repository) SetSetting(key, value string) error {
+	now := time.Now()
+	return r.db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "key"}},
+		DoUpdates: clause.AssignmentColumns([]string{"value", "updated_at"}),
+	}).Create(&Setting{Key: key, Value: value, UpdatedAt: &now}).Error
 }

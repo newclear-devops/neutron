@@ -181,6 +181,7 @@
     <a href="#/projects">Projects</a>
     <a href="#/recent">Recent Jobs</a>
     <a href="#/snippets">Snippets</a>
+    <a href="#/default-pipeline">Default Pipeline</a>
     <a href="#/register">Register</a>
     <span style="flex:1"></span>
     <a href="#/help" style="margin-right:0">📖 Help</a>
@@ -245,6 +246,8 @@
             renderRegister();
         } else if (hash === '#/snippets') {
             renderSnippets();
+        } else if (hash === '#/default-pipeline') {
+            renderDefaultPipeline();
         } else if (hash === '#/help') {
             renderHelp();
         } else if (hash.startsWith('#/register/success?')) {
@@ -1143,6 +1146,57 @@
             });
     }
     window.deleteSnippet = deleteSnippet;
+
+    // --- Default Pipeline ---
+    function renderDefaultPipeline() {
+        app.innerHTML =
+            '<p class="page-title">Default <b>Pipeline</b></p>' +
+            '<p style="font-size:1.4rem;color:#606c76;margin-bottom:20px;max-width:720px">' +
+                'This neutron.yaml is used as a fallback whenever a repository push/MR/tag arrives but the repo has no <code>neutron.yaml</code>. ' +
+                'It applies globally to all registered projects. Leave it empty to disable the fallback (webhooks for repos without neutron.yaml will then fail as before).' +
+            '</p>' +
+            '<div id="defaultPipelineMsg" style="font-size:1.3rem;margin-bottom:8px;display:none"></div>' +
+            '<label for="defaultPipelineContent">Content <span style="color:#999;font-weight:400">(neutron.yaml)</span></label>' +
+            '<textarea id="defaultPipelineContent" style="width:100%;min-height:360px;font-family:\'SF Mono\',\'Fira Code\',Menlo,monospace;font-size:1.3rem;padding:12px;border:1px solid #d1d5db;border-radius:4px;resize:vertical" placeholder="jobs:\n  build:\n    trigger: [PUSH, MR]\n    steps:\n      - name: build\n        cmd: make build"></textarea>' +
+            '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">' +
+                '<button class="btn btn-primary" style="margin-top:0" id="defaultPipelineSaveBtn">Save</button>' +
+            '</div>';
+
+        var textarea = document.getElementById('defaultPipelineContent');
+        var msgEl = document.getElementById('defaultPipelineMsg');
+
+        fetch('/api/default-pipeline')
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (data.error) { showDefaultPipelineMsg(data.error, true); return; }
+                textarea.value = data.content || '';
+            })
+            .catch(function(err) { showDefaultPipelineMsg('Failed to load: ' + err, true); });
+
+        document.getElementById('defaultPipelineSaveBtn').onclick = function() {
+            if (!confirm('This default configuration will be used for all repositories missing a neutron.yaml. Save?')) {
+                return;
+            }
+            fetch('/api/default-pipeline', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ content: textarea.value })
+            })
+            .then(function(r) { return r.json(); })
+            .then(function(result) {
+                if (result.error) { showDefaultPipelineMsg(result.error, true); return; }
+                showDefaultPipelineMsg('Saved.', false);
+            })
+            .catch(function(err) { showDefaultPipelineMsg('Request failed: ' + err, true); });
+        };
+
+        function showDefaultPipelineMsg(text, isError) {
+            msgEl.textContent = text;
+            msgEl.style.color = isError ? '#dc2626' : '#16a34a';
+            msgEl.style.display = 'block';
+        }
+    }
+    window.renderDefaultPipeline = renderDefaultPipeline;
 
     // --- Status ---
     function renderStatus(jobName) {
