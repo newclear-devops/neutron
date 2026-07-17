@@ -51,6 +51,7 @@ func NewRunner(workingDir string, triggerType string, jobName string, reporter m
 	if err != nil {
 		// Repo has no neutron.yaml — fall back to the globally-configured
 		// default pipeline fetched from the Neutron API.
+		log.Printf("neutron.yaml not readable (%v), falling back to default pipeline from %s", err, apiUrl)
 		fallback, ferr := fetchDefaultPipeline(apiUrl)
 		if ferr != nil {
 			log.Fatalf("neutron.yaml not found and default pipeline unavailable: %v (read error: %v)", ferr, err)
@@ -58,6 +59,7 @@ func NewRunner(workingDir string, triggerType string, jobName string, reporter m
 		if len(fallback) == 0 {
 			log.Fatalf("neutron.yaml not found and no default pipeline configured")
 		}
+		log.Printf("using default pipeline for job %s", jobName)
 		data = fallback
 	}
 	var pipeline model.Pipeline

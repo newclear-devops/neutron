@@ -556,6 +556,7 @@ func (s *Server) handleWebhook(c *gin.Context) {
 				c.JSON(http.StatusBadRequest, gin.H{"error": derr.Error()})
 				return
 			}
+			log.Printf("webhook %s: repo %s has no neutron.yaml, using default pipeline", id, webhookConfig.RepoUrl)
 			ph.pipeline = defaultPipeline
 		} else {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -714,6 +715,7 @@ func (s *Server) handleTrigger(c *gin.Context) {
 				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 				return
 			}
+			log.Printf("trigger: repo %s has no neutron.yaml at ref %s, using default pipeline", req.RepoUrl, req.Ref)
 		} else {
 			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("failed to fetch pipeline: %v", err)})
 			return
