@@ -529,6 +529,10 @@ func (s *Server) defaultPipeline() (model.Pipeline, error) {
 	if err := yaml.Unmarshal([]byte(content), &pipeline); err != nil {
 		return model.Pipeline{}, fmt.Errorf("default pipeline is invalid yaml: %w", err)
 	}
+	for name, job := range pipeline.Jobs {
+		log.Printf("default pipeline: job %q triggers=%v", name, job.Trigger)
+	}
+	log.Printf("default pipeline loaded: %d job(s)", len(pipeline.Jobs))
 	return pipeline, nil
 }
 
@@ -564,9 +568,16 @@ func (s *Server) handleWebhook(c *gin.Context) {
 		}
 	}
 
+	jobNames := make([]string, 0, len(ph.pipeline.Jobs))
+	for name := range ph.pipeline.Jobs {
+		jobNames = append(jobNames, name)
+	}
+	log.Printf("webhook %s: trigger=%s, resolved pipeline defines %d job(s): %v", id, ph.trigger, len(ph.pipeline.Jobs), jobNames)
+
 	var jobs []string
 	for jobName, job := range ph.pipeline.Jobs {
 		if !isValidTrigger(ph.trigger, job.Trigger) {
+			log.Printf("webhook %s: skipping job %q — trigger %s not in %v", id, jobName, ph.trigger, job.Trigger)
 			continue
 		}
 
@@ -604,6 +615,9 @@ func (s *Server) handleWebhook(c *gin.Context) {
 		s.sendJobNotifications(job.Notify, title, content)
 	}
 
+	if len(jobs) == 0 {
+		log.Printf("webhook %s: no jobs launched — none of %v matched trigger %s", id, jobNames, ph.trigger)
+	}
 	c.JSON(http.StatusOK, gin.H{"status": "ok", "pipeline": ph.pipeline, "jobs": jobs})
 }
 
@@ -725,6 +739,11 @@ func (s *Server) handleTrigger(c *gin.Context) {
 	// Find the specified job
 	job, ok := pipeline.Jobs[req.JobName]
 	if !ok {
+		jobNames := make([]string, 0, len(pipeline.Jobs))
+		for name := range pipeline.Jobs {
+			jobNames = append(jobNames, name)
+		}
+		log.Printf("trigger: repo=%s ref=%s job %q not found in resolved pipeline (available: %v)", req.RepoUrl, req.Ref, req.JobName, jobNames)
 		c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("job '%s' not found in pipeline", req.JobName)})
 		return
 	}

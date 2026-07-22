@@ -43,6 +43,7 @@ func fetchDefaultPipeline(apiUrl string) ([]byte, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		return nil, err
 	}
+	log.Printf("runner: fetched default pipeline from %s/api/default-pipeline (%d bytes)", apiUrl, len(body.Content))
 	return []byte(body.Content), nil
 }
 

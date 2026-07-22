@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"gopkg.in/yaml.v3"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"neutron/internal/model"
@@ -56,7 +57,9 @@ func (b *Base) Parse() (model.Pipeline, error) {
 		return model.Pipeline{}, err
 	}
 	defer res.Body.Close()
+	log.Printf("parser: fetched neutron.yaml GET %s (ref=%s) -> HTTP %d", b.AccessApiPath, b.CodeSha, res.StatusCode)
 	if res.StatusCode == http.StatusNotFound {
+		log.Printf("parser: neutron.yaml not found (HTTP 404) at %s (ref=%s), signaling default-pipeline fallback", b.AccessApiPath, b.CodeSha)
 		return model.Pipeline{}, fmt.Errorf("%w (ref: %s)", ErrPipelineNotFound, b.CodeSha)
 	}
 	if res.StatusCode == http.StatusUnauthorized || res.StatusCode == http.StatusForbidden {
@@ -76,6 +79,19 @@ func (b *Base) Parse() (model.Pipeline, error) {
 	}
 	var pipeline model.Pipeline
 	err = yaml.Unmarshal(neutronContent, &pipeline)
+	if err != nil {
+		log.Printf("parser: neutron.yaml at %s (ref=%s) failed to parse as YAML: %v", b.AccessApiPath, b.CodeSha, err)
+		return pipeline, err
+	}
+	if len(pipeline.Jobs) == 0 {
+		// A HTTP 200 whose body carries no jobs (empty file, error envelope, or a
+		// platform that answers a missing file with 200 instead of 404) would
+		// otherwise be treated as a valid-but-empty pipeline and silently launch
+		// nothing. Log loudly so this is distinguishable from a real 404.
+		log.Printf("parser: WARNING neutron.yaml at %s (ref=%s) parsed to 0 jobs from HTTP %d response (%d bytes); default-pipeline fallback will NOT trigger for a non-404 response", b.AccessApiPath, b.CodeSha, res.StatusCode, len(neutronContent))
+	} else {
+		log.Printf("parser: neutron.yaml at %s (ref=%s) parsed %d job(s)", b.AccessApiPath, b.CodeSha, len(pipeline.Jobs))
+	}
 	return pipeline, err
 }
 
