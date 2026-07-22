@@ -56,6 +56,7 @@ func (s *Server) registerRoutes(r *gin.Engine) {
 	r.GET("/api/projects", s.handleListProjects)
 	r.GET("/api/projects/:id/jobs", s.handleListProjectJobs)
 	r.GET("/api/jobs/recent", s.handleRecentJobs)
+	r.GET("/api/jobs/:jobName/running-siblings", s.handleRunningSiblings)
 	r.POST("/api/register", s.handleRegister)
 	r.GET("/api/status/:jobName", s.handleStatus)
 	r.POST("/api/report/:jobName", s.handleReport)
@@ -104,6 +105,30 @@ func (s *Server) handleRecentJobs(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"jobs": jobs})
+}
+
+// handleRunningSiblings reports whether other, still-running jobs exist in the
+// same project as :jobName. The project is derived from the (unique) job name,
+// so no project_id param is needed. A job is "running" when it has not been
+// marked completed (success or failure both count as completed).
+func (s *Server) handleRunningSiblings(c *gin.Context) {
+	jobName := c.Param("jobName")
+	job, err := s.repo.GetJobByName(jobName)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "job not found"})
+		return
+	}
+	siblings, err := s.repo.ListRunningJobs(job.ProjectId, jobName, 7)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"project_id": job.ProjectId,
+		"running":    len(siblings) > 0,
+		"count":      len(siblings),
+		"jobs":       siblings,
+	})
 }
 
 func (s *Server) handleRegister(c *gin.Context) {

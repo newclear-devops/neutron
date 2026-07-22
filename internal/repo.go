@@ -208,6 +208,19 @@ func (r *Repository) ListAllRecentJobs(days int) ([]PipelineJob, error) {
 	return jobs, err
 }
 
+// ListRunningJobs returns not-yet-completed jobs for a project, excluding one
+// job by name. Scoped to recent jobs (RIGHT(name,15) timestamp) so a zombie row
+// that never reported terminal status doesn't count as "running" forever.
+func (r *Repository) ListRunningJobs(projectId, excludeName string, days int) ([]PipelineJob, error) {
+	var jobs []PipelineJob
+	cutoff := time.Now().AddDate(0, 0, -days).Format("20060102") + "-000000"
+	err := r.db.Where(
+		"project_id = ? AND name <> ? AND completed = ? AND RIGHT(name, 15) >= ?",
+		projectId, excludeName, false, cutoff,
+	).Order("id DESC").Find(&jobs).Error
+	return jobs, err
+}
+
 func (r *Repository) GetJobByName(name string) (*PipelineJob, error) {
 	var job PipelineJob
 	result := r.db.Where("name = ?", name).Preload("Pods").First(&job)
