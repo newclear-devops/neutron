@@ -891,7 +891,7 @@
 
         document.getElementById('copyBtn').addEventListener('click', function() {
             var btn = this;
-            navigator.clipboard.writeText(data.webhookUrl).then(function() {
+            copyText(data.webhookUrl).then(function() {
                 btn.textContent = 'Copied';
             }).catch(function() {
                 var range = document.createRange();
@@ -1128,7 +1128,7 @@
         }
         var params = s ? parseParamList(s.params) : [];
         var usage = buildUsageUrl(name, params);
-        navigator.clipboard.writeText(usage.cmd).then(function() {
+        copyText(usage.cmd).then(function() {
             alert('Copied: ' + usage.cmd);
         }).catch(function() {
             prompt('Copy this command:', usage.cmd);
@@ -1288,6 +1288,32 @@
     window.rerunJob = rerunJob;
 
     // --- Utils ---
+    // Copy text to clipboard. navigator.clipboard is only available in secure
+    // contexts (HTTPS / localhost); over plain HTTP it is undefined, so fall
+    // back to a temporary textarea + execCommand('copy'). Returns a Promise.
+    function copyText(text) {
+        if (navigator.clipboard && window.isSecureContext) {
+            return navigator.clipboard.writeText(text);
+        }
+        return new Promise(function(resolve, reject) {
+            try {
+                var ta = document.createElement('textarea');
+                ta.value = text;
+                ta.style.position = 'fixed';
+                ta.style.top = '-9999px';
+                ta.style.opacity = '0';
+                document.body.appendChild(ta);
+                ta.focus();
+                ta.select();
+                var ok = document.execCommand('copy');
+                document.body.removeChild(ta);
+                ok ? resolve() : reject(new Error('execCommand copy failed'));
+            } catch (e) {
+                reject(e);
+            }
+        });
+    }
+
     function escHtml(s) {
         if (!s) return '';
         var d = document.createElement('div');
