@@ -16,6 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
+	"gorm.io/gorm"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -56,6 +57,7 @@ func (s *Server) registerRoutes(r *gin.Engine) {
 	r.GET("/api/projects", s.handleListProjects)
 	r.GET("/api/projects/:id/jobs", s.handleListProjectJobs)
 	r.GET("/api/jobs/recent", s.handleRecentJobs)
+	r.GET("/api/jobs/:jobName/running-siblings", s.handleRunningSiblings)
 	r.POST("/api/register", s.handleRegister)
 	r.GET("/api/status/:jobName", s.handleStatus)
 	r.POST("/api/report/:jobName", s.handleReport)
@@ -104,6 +106,53 @@ func (s *Server) handleRecentJobs(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"jobs": jobs})
+}
+
+// handleRunningSiblings reports whether other, still-running jobs exist in the
+// same project as :jobName. The project is derived from the (unique) job name,
+// so no project_id param is needed. A job is "running" when it has not been
+// marked completed (success or failure both count as completed).
+//
+// Caveat: a job whose pod crashed without reporting terminal status (OOMKill,
+// node failure, eviction) stays completed=false in the DB. To mitigate this,
+// each candidate is cross-checked against the K8s API: only jobs with at least
+// one active pod are reported as running. Jobs with no live pod are excluded.
+func (s *Server) handleRunningSiblings(c *gin.Context) {
+	jobName := c.Param("jobName")
+	projectId, err := s.repo.GetJobProjectId(jobName)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "job not found"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		}
+		return
+	}
+	siblings, err := s.repo.ListRunningJobs(projectId, jobName, 7)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	// Cross-check against K8s: a job whose pod crashed without reporting
+	// (OOMKill, node failure, eviction) stays completed=false in the DB.
+	// We only consider a sibling "running" if it has at least one active pod
+	// in K8s. Jobs not found in K8s, already finished, or without active pods
+	// are excluded — this prevents a single crash from creating a phantom
+	// "running" sibling that blocks future deployments.
+	alive := make([]internal.PipelineJob, 0, len(siblings))
+	for _, sib := range siblings {
+		k8sJob, err := s.clientSet.BatchV1().Jobs(s.config.Kubernetes.Namespace).Get(context.Background(), sib.Name, metav1.GetOptions{})
+		if err != nil || k8sJob.Status.Active == 0 {
+			continue
+		}
+		alive = append(alive, sib)
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"project_id": projectId,
+		"running":    len(alive) > 0,
+		"count":      len(alive),
+		"jobs":       alive,
+	})
 }
 
 func (s *Server) handleRegister(c *gin.Context) {
