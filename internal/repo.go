@@ -192,18 +192,23 @@ func (r *Repository) GetJobStatus(jobName string) (JobStatus, error) {
 	return status, nil
 }
 
+// cutoffDays returns the timestamp suffix used to filter job names by recency.
+// Job names follow the format neutron-<job>-YYYYMMDD-HHMMSS; the last 15 chars
+// encode the timestamp and can be compared as a string.
+func cutoffDays(days int) string {
+	return time.Now().AddDate(0, 0, -days).Format("20060102") + "-000000"
+}
+
 func (r *Repository) ListProjectJobs(projectId string, days int) ([]PipelineJob, error) {
 	var jobs []PipelineJob
-	cutoff := time.Now().AddDate(0, 0, -days).Format("20060102") + "-000000"
-	err := r.db.Where("project_id = ? AND RIGHT(name, 15) >= ?", projectId, cutoff).
+	err := r.db.Where("project_id = ? AND RIGHT(name, 15) >= ?", projectId, cutoffDays(days)).
 		Order("id DESC").Preload("Pods").Find(&jobs).Error
 	return jobs, err
 }
 
 func (r *Repository) ListAllRecentJobs(days int) ([]PipelineJob, error) {
 	var jobs []PipelineJob
-	cutoff := time.Now().AddDate(0, 0, -days).Format("20060102") + "-000000"
-	err := r.db.Where("RIGHT(name, 15) >= ?", cutoff).
+	err := r.db.Where("RIGHT(name, 15) >= ?", cutoffDays(days)).
 		Order("id DESC").Preload("Pods").Find(&jobs).Error
 	return jobs, err
 }
@@ -213,12 +218,22 @@ func (r *Repository) ListAllRecentJobs(days int) ([]PipelineJob, error) {
 // that never reported terminal status doesn't count as "running" forever.
 func (r *Repository) ListRunningJobs(projectId, excludeName string, days int) ([]PipelineJob, error) {
 	var jobs []PipelineJob
-	cutoff := time.Now().AddDate(0, 0, -days).Format("20060102") + "-000000"
 	err := r.db.Where(
 		"project_id = ? AND name <> ? AND completed = ? AND RIGHT(name, 15) >= ?",
-		projectId, excludeName, false, cutoff,
+		projectId, excludeName, false, cutoffDays(days),
 	).Order("id DESC").Find(&jobs).Error
 	return jobs, err
+}
+
+// GetJobProjectId returns only the project_id for a job by name, avoiding the
+// cost of preloading Pods and the full status field.
+func (r *Repository) GetJobProjectId(name string) (string, error) {
+	var job PipelineJob
+	result := r.db.Select("project_id").Where("name = ?", name).First(&job)
+	if result.Error != nil {
+		return "", result.Error
+	}
+	return job.ProjectId, nil
 }
 
 func (r *Repository) GetJobByName(name string) (*PipelineJob, error) {
