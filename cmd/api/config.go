@@ -112,4 +112,8 @@ func applyEnvOverrides(config *model.Config) {
 	envStr("NEUTRON_NOTIFY_APP_ID", func(v string) { config.Notify.AppId = v })
 	envTrue("NEUTRON_NOTIFY_SKIP_TLS_VERIFY", func() { config.Notify.SkipTLSVerify = true })
 	envStr("NEUTRON_POD_API_URL", func(v string) { config.Kubernetes.PodApiUrl = v })
+
+	envStr("NEUTRON_SNIPPETS_REPO_URL", func(v string) { config.Snippets.RepoUrl = v })
+	envStr("NEUTRON_SNIPPETS_PLATFORM", func(v string) { config.Snippets.Platform = v })
+	envStr("NEUTRON_SNIPPETS_REF", func(v string) { config.Snippets.Ref = v })
 }

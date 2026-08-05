@@ -318,6 +318,22 @@ func (r *Repository) DeleteSnippet(name string) error {
 	return r.db.Where("name = ?", name).Delete(&Snippet{}).Error
 }
 
+// ReplaceAllSnippets atomically replaces every row in neutron_snippet with the
+// given slice inside a single transaction (DELETE all + INSERT all). An empty
+// slice clears the cache. Used by the GitLab-backed snippet sync to refresh the
+// local read cache.
+func (r *Repository) ReplaceAllSnippets(snippets []Snippet) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("1 = 1").Delete(&Snippet{}).Error; err != nil {
+			return err
+		}
+		if len(snippets) == 0 {
+			return nil
+		}
+		return tx.Create(&snippets).Error
+	})
+}
+
 // --- Settings ---
 
 // GetSetting returns the value for a key, or an empty string if the key is unset.
