@@ -10,6 +10,7 @@ type Config struct {
 	PodCodeBase map[string]CodeBase `yaml:"pod_codebase,omitempty"`
 	Kubernetes  KubernetesConfig    `yaml:"kubernetes"`
 	Notify      NotifyConfig        `yaml:"notify,omitempty"`
+	Snippets    SnippetsConfig      `yaml:"snippets,omitempty"`
 }
 
 type NotifyConfig struct {
@@ -27,6 +28,15 @@ type KubernetesConfig struct {
 	CheckoutImage    string   `yaml:"checkout-image"`      // dedicated image for git checkout (must include git + ssh)
 	ImagePullSecrets []string `yaml:"image-pull-secrets,omitempty"` // K8s image pull secret names
 	PodApiUrl        string   `yaml:"pod-api-url,omitempty"`        // Pod 内访问 API server 的地址（本地开发用，覆盖集群内地址）
+}
+
+// SnippetsConfig configures an optional GitLab-backed snippet store. When RepoUrl
+// is non-empty, snippets are synced from the repository on startup and via the
+// refresh API; the MySQL neutron_snippet table acts as a local read cache.
+type SnippetsConfig struct {
+	RepoUrl  string `yaml:"repo_url"`  // GitLab project URL, e.g. git@gitlab.example.com:platform/snippets.git
+	Platform string `yaml:"platform"`  // which codebase entry to reuse for API token/auth, e.g. "GitLab"
+	Ref      string `yaml:"ref"`       // branch to read from (defaults to "main" when empty)
 }
 
 type CodeBase struct {

@@ -911,7 +911,7 @@
         app.innerHTML =
             '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:24px">' +
                 '<p class="page-title" style="margin-bottom:0">Shell <b>Snippets</b></p>' +
-                '<button class="btn btn-primary" style="margin-top:0" onclick="openSnippetModal()">+ New Snippet</button>' +
+                '<button class="btn btn-outline" style="margin-top:0" id="snippetRefreshBtn" onclick="refreshSnippets()">&#x1F504; Refresh</button>' +
             '</div>' +
             '<div style="margin-bottom:20px">' +
                 '<input type="text" id="snippetSearchInput" placeholder="Filter by name, title, or description..." style="max-width:400px">' +
@@ -957,7 +957,7 @@
     function renderSnippetsList(snippets) {
         var el = document.getElementById('snippetsList');
         if (!snippets || snippets.length === 0) {
-            el.innerHTML = '<p style="color:#999">No snippets yet. <a href="javascript:void(0)" onclick="openSnippetModal()">Create one</a></p>';
+            el.innerHTML = '<p style="color:#999">No snippets yet. Use the Refresh button to sync from GitLab.</p>';
             return;
         }
 
@@ -1021,105 +1021,31 @@
             '</div>' +
             '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">' +
                 '<button class="btn btn-outline" style="margin-top:0" onclick="document.getElementById(\'snippetViewModal\').remove()">Close</button>' +
-                '<button class="btn btn-primary" style="margin-top:0" onclick="document.getElementById(\'snippetViewModal\').remove();openSnippetModal(\'' + escAttr(name) + '\')">Edit</button>' +
             '</div>';
         overlay.appendChild(modal);
         document.body.appendChild(overlay);
     }
     window.viewSnippet = viewSnippet;
 
-    function openSnippetModal(name) {
-        var isEdit = !!name;
-        var overlay = document.createElement('div');
-        overlay.className = 'modal-overlay';
-        overlay.id = 'snippetModal';
-        overlay.onclick = function(e) { if (e.target === overlay) overlay.remove(); };
-
-        var modal = document.createElement('div');
-        modal.className = 'modal';
-        modal.style.maxWidth = '640px';
-        modal.innerHTML =
-            '<h4>' + (isEdit ? 'Edit Snippet: ' + escHtml(name) : 'New Snippet') + '</h4>' +
-            '<div id="snippetModalError" style="color:#dc2626;font-size:1.3rem;margin-bottom:8px;display:none"></div>' +
-            '<label for="snippetName">Name <span style="color:#999;font-weight:400">(URL slug, e.g. docker-login)</span></label>' +
-            '<input type="text" id="snippetName" ' + (isEdit ? 'disabled style="background:#f9fafb"' : '') + '>' +
-            '<label for="snippetTitle">Title</label>' +
-            '<input type="text" id="snippetTitle">' +
-            '<label for="snippetDesc">Description</label>' +
-            '<input type="text" id="snippetDesc">' +
-            '<label for="snippetContent">Content <span style="color:#999;font-weight:400">(shell script)</span></label>' +
-            '<textarea id="snippetContent" style="width:100%;min-height:200px;font-family:\'SF Mono\',\'Fira Code\',Menlo,monospace;font-size:1.3rem;padding:12px;border:1px solid #d1d5db;border-radius:4px;resize:vertical" placeholder="#!/bin/sh\necho Hello"></textarea>' +
-            '<label for="snippetParams">Parameters <span style="color:#999;font-weight:400">(comma-separated, e.g. IMAGE_TAG, NAMESPACE)</span></label>' +
-            '<input type="text" id="snippetParams">' +
-            '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">' +
-                '<button class="btn btn-outline" style="margin-top:0" onclick="document.getElementById(\'snippetModal\').remove()">Cancel</button>' +
-                '<button class="btn btn-primary" style="margin-top:0" id="snippetSaveBtn">' + (isEdit ? 'Update' : 'Create') + '</button>' +
-            '</div>';
-        overlay.appendChild(modal);
-        document.body.appendChild(overlay);
-
-        if (isEdit) {
-            var s = null;
-            for (var i = 0; i < _snippets.length; i++) {
-                if (_snippets[i].name === name) { s = _snippets[i]; break; }
-            }
-            if (s) {
-                document.getElementById('snippetName').value = s.name || '';
-                document.getElementById('snippetTitle').value = s.title || '';
-                document.getElementById('snippetDesc').value = s.description || '';
-                document.getElementById('snippetContent').value = s.content || '';
-                document.getElementById('snippetParams').value = s.params || '';
-            }
-        }
-
-        var saveBtn = document.getElementById('snippetSaveBtn');
-        saveBtn.onclick = function() {
-            var data = {
-                name: document.getElementById('snippetName').value.trim(),
-                title: document.getElementById('snippetTitle').value.trim(),
-                description: document.getElementById('snippetDesc').value.trim(),
-                content: document.getElementById('snippetContent').value,
-                params: document.getElementById('snippetParams').value.trim()
-            };
-
-            if (!data.name || !data.title || !data.content) {
-                var errEl = document.getElementById('snippetModalError');
-                errEl.textContent = 'Name, title, and content are required.';
-                errEl.style.display = 'block';
-                return;
-            }
-
-            if (isEdit && !confirm('Changes will impact all pipelines using this snippet. Continue?')) {
-                return;
-            }
-
-            var method = isEdit ? 'PATCH' : 'POST';
-            var url = '/api/snippets' + (isEdit ? '/' + encodeURIComponent(name) : '');
-
-            fetch(url, {
-                method: method,
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(data)
-            })
+    function refreshSnippets() {
+        var btn = document.getElementById('snippetRefreshBtn');
+        btn.disabled = true;
+        btn.textContent = 'Refreshing...';
+        fetch('/api/snippets/refresh', { method: 'POST' })
             .then(function(r) { return r.json(); })
-            .then(function(result) {
-                if (result.error) {
-                    var errEl = document.getElementById('snippetModalError');
-                    errEl.textContent = result.error;
-                    errEl.style.display = 'block';
-                    return;
-                }
-                overlay.remove();
+            .then(function(data) {
+                if (data.error) { alert('Refresh failed: ' + data.error); }
+                else { alert('Synced ' + data.count + ' snippet(s) from GitLab.'); }
                 renderSnippets();
             })
-            .catch(function(err) {
-                var errEl = document.getElementById('snippetModalError');
-                errEl.textContent = 'Request failed: ' + err;
-                errEl.style.display = 'block';
+            .catch(function(err) { alert('Refresh failed: ' + err); })
+            .finally(function() {
+                btn.disabled = false;
+                btn.textContent = '\u{1F504} Refresh';
             });
-        };
     }
-    window.openSnippetModal = openSnippetModal;
+    window.refreshSnippets = refreshSnippets;
+
 
     function copySnippetCmd(name) {
         var s = null;
@@ -1135,17 +1061,6 @@
         });
     }
     window.copySnippetCmd = copySnippetCmd;
-
-    function deleteSnippet(name) {
-        if (!confirm('Delete snippet "' + name + '"?')) return;
-        fetch('/api/snippets/' + encodeURIComponent(name), { method: 'DELETE' })
-            .then(function(r) { return r.json(); })
-            .then(function(result) {
-                if (result.error) { alert(result.error); return; }
-                renderSnippets();
-            });
-    }
-    window.deleteSnippet = deleteSnippet;
 
     // --- Default Pipeline ---
     function renderDefaultPipeline() {

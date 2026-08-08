@@ -25,14 +25,14 @@ import (
 	"neutron/internal/ccwork"
 	"neutron/internal/model"
 	"neutron/internal/notify"
+	"neutron/internal/snippets"
 )
 
 //go:embed static/*
 var staticFs embed.FS
 
 var (
-	snippetNameRegex = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
-	safeParamKey     = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	safeParamKey = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 )
 
 func main() {
@@ -42,6 +42,20 @@ func main() {
 	}
 
 	repo := internal.NewRepository(config)
+
+	// Seed snippet cache from GitLab on startup (non-fatal on failure).
+	if config.Snippets.RepoUrl != "" {
+		if cb, ok := config.BaseConfig[config.Snippets.Platform]; ok {
+			count, err := snippets.SyncSnippets(config.Snippets.RepoUrl, config.Snippets.Platform, config.Snippets.Ref, cb.Url, cb.Token, cb.SkipTLSVerify, repo)
+			if err != nil {
+				log.Printf("WARNING: initial snippet sync failed (serving cached data): %v", err)
+			} else {
+				log.Printf("initial snippet sync: %d snippets loaded from %s", count, config.Snippets.RepoUrl)
+			}
+		} else {
+			log.Printf("WARNING: snippets platform %q not found in codebase config; skipping initial sync", config.Snippets.Platform)
+		}
+	}
 
 	// Initialize notify client
 	var notifyClient *notify.Client
@@ -96,46 +110,6 @@ func main() {
 		c.JSON(http.StatusOK, gin.H{"snippets": snippets})
 	})
 
-	r.POST("/api/snippets", func(c *gin.Context) {
-		var req struct {
-			Name        string `json:"name"`
-			Title       string `json:"title"`
-			Content     string `json:"content"`
-			Description string `json:"description"`
-			Params      string `json:"params"`
-		}
-		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-		if req.Name == "" || req.Title == "" || req.Content == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "name, title, and content are required"})
-			return
-		}
-		// Validate name format: must be a safe URL slug
-		if !snippetNameRegex.MatchString(req.Name) {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "name must be a valid slug (lowercase letters, digits, hyphens)"})
-			return
-		}
-		// Check duplicate
-		if _, err := repo.GetSnippetByName(req.Name); err == nil {
-			c.JSON(http.StatusConflict, gin.H{"error": "snippet name already exists"})
-			return
-		}
-		snippet := internal.Snippet{
-			Name:        req.Name,
-			Title:       req.Title,
-			Content:     req.Content,
-			Description: req.Description,
-			Params:      req.Params,
-		}
-		if err := repo.CreateSnippet(snippet); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"ok": true, "name": req.Name})
-	})
-
 	r.GET("/api/snippets/:name", func(c *gin.Context) {
 		name := c.Param("name")
 		snippet, err := repo.GetSnippetByName(name)
@@ -146,56 +120,24 @@ func main() {
 		c.JSON(http.StatusOK, gin.H{"snippet": snippet})
 	})
 
-	r.PATCH("/api/snippets/:name", func(c *gin.Context) {
-		name := c.Param("name")
-		if _, err := repo.GetSnippetByName(name); err != nil {
-			c.JSON(http.StatusNotFound, gin.H{"error": "snippet not found"})
+	// Refresh snippets from the configured GitLab project.
+	r.POST("/api/snippets/refresh", func(c *gin.Context) {
+		sc := config.Snippets
+		if sc.RepoUrl == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "snippets repo not configured"})
 			return
 		}
-		var req map[string]interface{}
-		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		cb, ok := config.BaseConfig[sc.Platform]
+		if !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("snippets platform %q not found in codebase config", sc.Platform)})
 			return
 		}
-		updates := make(map[string]interface{})
-		if v, ok := req["title"]; ok {
-			if s, isStr := v.(string); isStr && s != "" {
-				updates["title"] = s
-			}
-		}
-		if v, ok := req["content"]; ok {
-			if s, isStr := v.(string); isStr && s != "" {
-				updates["content"] = s
-			}
-		}
-		if v, ok := req["description"]; ok {
-			updates["description"] = v
-		}
-		if v, ok := req["params"]; ok {
-			updates["params"] = v
-		}
-		if len(updates) == 0 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "no fields to update"})
-			return
-		}
-		if err := repo.UpdateSnippet(name, updates); err != nil {
+		count, err := snippets.SyncSnippets(sc.RepoUrl, sc.Platform, sc.Ref, cb.Url, cb.Token, cb.SkipTLSVerify, repo)
+		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"ok": true})
-	})
-
-	r.DELETE("/api/snippets/:name", func(c *gin.Context) {
-		name := c.Param("name")
-		if _, err := repo.GetSnippetByName(name); err != nil {
-			c.JSON(http.StatusNotFound, gin.H{"error": "snippet not found"})
-			return
-		}
-		if err := repo.DeleteSnippet(name); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"ok": true})
+		c.JSON(http.StatusOK, gin.H{"ok": true, "count": count})
 	})
 
 	// --- Default pipeline (fallback when a repo has no neutron.yaml) ---
