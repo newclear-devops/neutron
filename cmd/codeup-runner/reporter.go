@@ -56,6 +56,10 @@ func NewCodeupReporterFromEnv(skipTLSVerify bool) (*CodeupReporter, error) {
 	}, nil
 }
 
+// ReportJobFinal is a no-op: Codeup commit statuses are per-step contexts, so
+// job-level completion is only reported to the Neutron API.
+func (r *CodeupReporter) ReportJobFinal(status model.StepResult, description string) {}
+
 func (r *CodeupReporter) Report(jobName string, stepName string, status model.StepResult, description string) {
 	m := codeupStatusMessage{
 		TargetUrl:   r.targetUrl,

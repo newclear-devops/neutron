@@ -47,6 +47,10 @@ func NewGitlabReporterFromEnv(skipTLSVerify bool) (*GitlabReporter, error) {
 	}, nil
 }
 
+// ReportJobFinal is a no-op: GitLab commit statuses are per-step contexts, so
+// job-level completion is only reported to the Neutron API.
+func (r *GitlabReporter) ReportJobFinal(status model.StepResult, description string) {}
+
 func (r *GitlabReporter) Report(jobName string, stepName string, status model.StepResult, description string) {
 	m := message{
 		TargetUrl:   r.targetUrl,

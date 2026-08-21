@@ -39,5 +39,5 @@ func main() {
 	}
 
 	runner := service.NewRunner("/repo", triggerType, jobName, composite, apiUrl, skipTriggerCheck)
-	runner.Run()
+	os.Exit(runner.Run())
 }

@@ -83,4 +83,8 @@ const (
 
 type Reporter interface {
 	Report(jobName string, stepName string, status StepResult, description string)
+	// ReportJobFinal reports the job-level terminal status (Success or Fail).
+	// The runner sends it exactly once, after the last step, so the API server
+	// can distinguish "job finished" from per-step reports.
+	ReportJobFinal(status StepResult, description string)
 }

@@ -102,6 +102,14 @@ type JobStatus struct {
 	Active      int    `json:"active"`
 	Succeeded   int    `json:"succeeded"`
 	Failed      int    `json:"failed"`
+	// Final marks a job-level terminal report, sent by the runner exactly once
+	// after the last step. Completion notifications and DB completion are gated
+	// on it so per-step reports are not mistaken for job completion.
+	Final bool `json:"final,omitempty"`
+	// Description carries the job-level summary (failing step, or the K8s
+	// failure condition for jobs the runner never reported), included in
+	// completion notifications.
+	Description string `json:"description,omitempty"`
 }
 
 type Repository struct {
@@ -222,6 +230,16 @@ func (r *Repository) ListRunningJobs(projectId, excludeName string, days int) ([
 		"project_id = ? AND name <> ? AND completed = ? AND RIGHT(name, 15) >= ?",
 		projectId, excludeName, false, cutoffDays(days),
 	).Order("id DESC").Find(&jobs).Error
+	return jobs, err
+}
+
+// ListUncompletedJobs returns not-yet-completed recent jobs (no Pods preload),
+// scoped by the RIGHT(name,15) timestamp like the other listing helpers. Used
+// by the reconciler to find jobs whose runner never reported a final status.
+func (r *Repository) ListUncompletedJobs(days int) ([]PipelineJob, error) {
+	var jobs []PipelineJob
+	err := r.db.Where("completed = ? AND RIGHT(name, 15) >= ?", false, cutoffDays(days)).
+		Order("id DESC").Find(&jobs).Error
 	return jobs, err
 }
 

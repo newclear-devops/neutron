@@ -333,30 +333,15 @@ func (s *Server) handleReport(c *gin.Context) {
 			}
 		}
 	}
-	// Mark job completed and asynchronously sync final pod phase
-	if status.Succeeded > 0 || status.Failed > 0 {
-		// Notify recipients: pipeline completed
-		if dbJob, err := s.repo.GetJobByName(jobName); err == nil {
-			statusUrl := fmt.Sprintf("%s/#/status/%s", s.config.Host, jobName)
-			project := s.repo.GetWebhookConfig(dbJob.ProjectId)
-			repoUrl := project.RepoUrl
-			if repoUrl == "" {
-				repoUrl = dbJob.ProjectId
-			}
-			var title, content string
-			if status.Failed > 0 {
-				title = "❌ 流水线执行失败"
-			} else {
-				title = "✅ 流水线执行成功"
-			}
-			content = fmt.Sprintf("📂 项目: %s\n📋 任务: %s\n🔗 查看: %s", repoUrl, jobName, statusUrl)
-			if status.SourceUrl != "" {
-				content += fmt.Sprintf("\n📎 源码: %s", status.SourceUrl)
-			}
-			s.sendJobNotifications(parseNotify(dbJob.Notify), title, content)
-		}
+	// A final, job-level terminal report (sent by the runner exactly once,
+	// after the last step) marks the job completed and triggers the completion
+	// notification. Per-step reports no longer trigger either — previously
+	// every step's terminal status was mistaken for job completion.
+	if status.Final && (status.Succeeded > 0 || status.Failed > 0) {
+		failed := status.Failed > 0
+		s.notifyJobCompleted(jobName, failed, status.Description)
 		finalPhase := "Succeeded"
-		if status.Failed > 0 {
+		if failed {
 			finalPhase = "Failed"
 		}
 		go func() {

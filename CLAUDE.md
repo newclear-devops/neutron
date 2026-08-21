@@ -101,13 +101,15 @@ jobs:
       groups: ["https://ccwork.example.com/robot/send?key=..."]  # CCWork group robot webhook URLs
 ```
 
-Two channels, sent in parallel (fire-and-forget) on pipeline trigger and completion for each job that declares targets:
-1. **IM notifications** (`internal/notify/`) — sends to individual users via enterprise IM bot API (`notify.users`).
+Two channels, sent in parallel (fire-and-forget) on pipeline trigger, rerun, and completion for each job that declares targets:
+1. **IM notifications** (`internal/notify/`) — sends to individual users via enterprise IM bot API (`notify.users`). Requires the server-side `notify` config (url/corp_id/app_id); if missing, user targets are skipped with a logged warning.
 2. **CCWork group webhooks** (`internal/ccwork/`) — sends to group chats via webhook URLs (`notify.groups`).
 
 Both use structured attachment format with title (head) and body content. A job with no `notify` block sends nothing.
 
-The config is parsed at trigger time and persisted as JSON on `neutron_job.notify`, so the completion handler (`POST /api/report/:jobName`, which only knows the job name) can read the same targets back via the `GetJobByName` lookup it already performs — see `sendJobNotifications` / `marshalNotify` / `parseNotify` in `cmd/api/`.
+The config is parsed at trigger time and persisted as JSON on `neutron_job.notify`, so the completion handler (`POST /api/report/:jobName`, which only knows the job name) can read the same targets back via the `GetJobByName` lookup it already performs — see `sendJobNotifications` / `notifyJobCompleted` / `marshalNotify` / `parseNotify` in `cmd/api/`.
+
+**Completion semantics:** the runner sends per-step reports plus exactly one job-level final report (`ReportJobFinal`, payload flag `final: true`, sent after the last step). Only the final report triggers the completion notification and `MarkJobCompleted` — per-step reports update status only. Jobs whose K8s Job reaches a terminal state without a final report (checkout conflict, image pull failure, OOM kill) are closed out by a background reconciler (`cmd/api/reconcile.go`, 30s tick): it waits 2 minutes after the K8s terminal time for a late final report, then writes a terminal status from K8s annotations, sends the completion notification with the K8s failure condition as reason, and marks the job completed. Jobs terminal for over an hour are closed silently (no late-notification flood). Note: the runner image and API server should be deployed together — an old runner with a new API server degrades to reconciler-driven completion notifications.
 
 ### Webhook URL Parameters
 

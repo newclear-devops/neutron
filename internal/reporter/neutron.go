@@ -83,6 +83,35 @@ func (r *Neutron) Report(jobName string, stepName string, status model.StepResul
 		payload["failed"] = 1
 	}
 
+	r.postStatus(payload)
+}
+
+// ReportJobFinal reports the job-level terminal status exactly once, after the
+// last step. The API server gates completion notifications and DB completion on
+// the final flag, so per-step reports are not mistaken for job completion.
+func (r *Neutron) ReportJobFinal(status model.StepResult, description string) {
+	payload := map[string]interface{}{
+		"webhook_type": r.webhookType,
+		"trigger_type": r.triggerType,
+		"repo_url":     r.repoUrl,
+		"active":       0,
+		"succeeded":    0,
+		"failed":       0,
+		"final":        true,
+		"description":  description,
+	}
+
+	switch status {
+	case model.Success:
+		payload["succeeded"] = 1
+	default:
+		payload["failed"] = 1
+	}
+
+	r.postStatus(payload)
+}
+
+func (r *Neutron) postStatus(payload map[string]interface{}) {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		log.Printf("Failed to marshal status: %v", err)
