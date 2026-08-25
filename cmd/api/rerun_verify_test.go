@@ -59,7 +59,7 @@ func TestLauncherFromSpecRebuild(t *testing.T) {
 	}
 	for k, want := range map[string]string{
 		"COMMIT_SHA": "abc123def", "REPORT_SHA": "abc123def", "TRIGGER": "PUSH",
-		"CODE_REF": "main", "PROJECT_ID": "101", "DEPLOY_ENV": "prod",
+		"CODE_REF": "main", "PROJECT_ID": "101", "PROJECT_NAME": "order-service", "DEPLOY_ENV": "prod",
 		"RUNNER_PLATFORM": "gitlab", "SKIP_TLS_VERIFY": "true",
 	} {
 		if env[k] != want {

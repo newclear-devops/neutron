@@ -8,6 +8,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"neutron/internal/model"
+	"neutron/internal/parser"
 	"time"
 )
 
@@ -62,6 +63,7 @@ func (l *Launcher) CreateJob(neutronHost string) *batchv1.Job {
 		{Name: "CODEBASE_TOKEN", Value: l.RunnerConfig.CodebaseToken},
 		{Name: "CODEBASE_URL", Value: l.RunnerConfig.CodebaseUrl},
 		{Name: "PROJECT_ID", Value: l.RunnerConfig.ProjectId},
+		{Name: "PROJECT_NAME", Value: parser.ExtractRepoName(l.RunnerConfig.GitRepoUrl)},
 		{Name: "COMMIT_SHA", Value: l.RunnerConfig.CommitSha},
 		{Name: "REPORT_SHA", Value: l.RunnerConfig.ReportSha},
 		{Name: "TRIGGER", Value: l.RunnerConfig.Trigger},
