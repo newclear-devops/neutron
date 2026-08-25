@@ -104,7 +104,7 @@ func (r *Neutron) ReportJobFinal(status model.StepResult, description string) {
 	switch status {
 	case model.Success:
 		payload["succeeded"] = 1
-	default:
+	case model.Fail:
 		payload["failed"] = 1
 	}
 

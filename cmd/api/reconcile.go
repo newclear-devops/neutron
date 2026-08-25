@@ -13,6 +13,16 @@ import (
 	"neutron/internal"
 )
 
+const (
+	// reconcileGracePeriod is how long the reconciler waits after a K8s Job
+	// reaches a terminal state before assuming the runner's final report will
+	// never arrive and closing the job out itself.
+	reconcileGracePeriod = 2 * time.Minute
+	// reconcileStaleAfter is the terminal age past which a never-reported job
+	// is closed out silently instead of sending a late completion notification.
+	reconcileStaleAfter = time.Hour
+)
+
 // startReconciler launches a background loop that closes out jobs whose K8s
 // Job reached a terminal state without the runner delivering its final report
 // (checkout conflict, image pull failure, OOM kill, crash). Such jobs would
@@ -32,6 +42,12 @@ func (s *Server) startReconciler(ctx context.Context, interval time.Duration) {
 	}()
 }
 
+// reconcileOnce closes out uncompleted jobs whose K8s Job is terminal but that
+// never delivered a final runner report. It is deliberately single-instance:
+// with multiple API replicas each running a reconciler, a job could be closed
+// out (and notified) more than once. The grace window after the K8s terminal
+// time is what keeps a normally-finishing job — whose final report arrives
+// within that window — from being double-notified.
 func (s *Server) reconcileOnce() {
 	jobs, err := s.repo.ListUncompletedJobs(7)
 	if err != nil {
@@ -50,10 +66,10 @@ func (s *Server) reconcileOnce() {
 			continue // still running
 		}
 		age := time.Since(terminalAt)
-		if age < 2*time.Minute {
+		if age < reconcileGracePeriod {
 			continue // give the runner time to deliver its final report
 		}
-		if age > time.Hour {
+		if age > reconcileStaleAfter {
 			// Stale zombie (e.g. from before this feature existed): close it
 			// out silently instead of sending a flood of late notifications.
 			log.Printf("reconciler: closing stale job %s (terminal %s ago, no notification)", j.Name, age.Truncate(time.Second))
@@ -66,7 +82,7 @@ func (s *Server) reconcileOnce() {
 			reason = "runner 未上报最终状态（容器异常退出或被杀死）"
 		}
 		s.updateTerminalStatus(j.Name, k8sJob, failed)
-		s.notifyJobCompleted(j.Name, failed, reason)
+		s.notifyJobCompleted(&j, failed, reason)
 		_ = s.repo.MarkJobCompleted(j.Name)
 		outcome := "succeeded"
 		if failed {

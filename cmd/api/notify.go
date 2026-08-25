@@ -43,22 +43,31 @@ func (s *Server) sendJobNotifications(n *model.Notify, title, content string) {
 
 // notifyJobCompleted sends the completion notification for a job to the
 // targets persisted on its DB row. failed selects the failure/success title;
-// reason, when non-empty, is appended to the message body (the failing step
-// for runner-reported jobs, the K8s failure condition for reconciled jobs).
-func (s *Server) notifyJobCompleted(jobName string, failed bool, reason string) {
-	dbJob, err := s.repo.GetJobByName(jobName)
-	if err != nil {
-		log.Printf("notify: job %s not found, skipping completion notification: %v", jobName, err)
+// reason, when non-empty and the job failed, is appended to the message body
+// (the failing step for runner-reported jobs, the K8s failure condition for
+// reconciled jobs). Callers that already hold the job row pass it in to avoid
+// a duplicate lookup.
+func (s *Server) notifyJobCompleted(dbJob *internal.PipelineJob, failed bool, reason string) {
+	if dbJob == nil {
 		return
 	}
 	var status internal.JobStatus
 	_ = json.Unmarshal([]byte(dbJob.Status), &status)
-	statusUrl := fmt.Sprintf("%s/#/status/%s", s.config.Host, jobName)
+	statusUrl := fmt.Sprintf("%s/#/status/%s", s.config.Host, dbJob.Name)
 	project := s.repo.GetWebhookConfig(dbJob.ProjectId)
 	repoUrl := project.RepoUrl
 	if repoUrl == "" {
 		repoUrl = dbJob.ProjectId
 	}
+	title, content := completionMessage(repoUrl, dbJob.Name, status.SourceUrl, statusUrl, failed, reason)
+	s.sendJobNotifications(parseNotify(dbJob.Notify), title, content)
+}
+
+// completionMessage builds the completion notification title and body. The
+// failure reason is only rendered for failed jobs, so a successful final
+// report that carries a non-empty description never prints a spurious
+// "原因" line.
+func completionMessage(repoUrl, jobName, sourceUrl, statusUrl string, failed bool, reason string) (string, string) {
 	var title string
 	if failed {
 		title = "❌ 流水线执行失败"
@@ -66,11 +75,11 @@ func (s *Server) notifyJobCompleted(jobName string, failed bool, reason string) 
 		title = "✅ 流水线执行成功"
 	}
 	content := fmt.Sprintf("📂 项目: %s\n📋 任务: %s\n🔗 查看: %s", repoUrl, jobName, statusUrl)
-	if status.SourceUrl != "" {
-		content += fmt.Sprintf("\n📎 源码: %s", status.SourceUrl)
+	if sourceUrl != "" {
+		content += fmt.Sprintf("\n📎 源码: %s", sourceUrl)
 	}
-	if reason != "" {
+	if failed && reason != "" {
 		content += fmt.Sprintf("\n📝 原因: %s", reason)
 	}
-	s.sendJobNotifications(parseNotify(dbJob.Notify), title, content)
+	return title, content
 }

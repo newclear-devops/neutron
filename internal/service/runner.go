@@ -83,6 +83,10 @@ func NewRunner(workingDir string, triggerType string, jobName string, reporter m
 		}
 		if !matched {
 			reporter.Report(jobName, "", model.Success, fmt.Sprintf("Current job skipped in %s.", triggerType))
+			// No steps will run for this trigger: report a final "skipped"
+			// success and stop before Run() executes. NewRunner has no
+			// skip-signal in its contract, so we exit here (code 0) rather
+			// than running zero steps through Run().
 			reporter.ReportJobFinal(model.Success, "job skipped: trigger mismatch")
 			os.Exit(0)
 		}
