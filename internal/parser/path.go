@@ -54,3 +54,14 @@ func ExtractCodeupOrgAndProject(sshUrl string) (orgId, projectPath string) {
 func EncodeCodeupProjectPath(projectPath string) string {
 	return strings.ReplaceAll(projectPath, "/", "%252F")
 }
+
+// ExtractRepoName extracts the leaf repository name from a Git SSH/HTTP URL.
+// Mirrors the frontend getRepoName(): strip the ".git" suffix, take the last
+// path segment. e.g. "git@gitlab.example.com:group/project.git" → "project".
+func ExtractRepoName(repoUrl string) string {
+	trimmed := strings.TrimSuffix(repoUrl, ".git")
+	if idx := strings.LastIndex(trimmed, "/"); idx >= 0 {
+		trimmed = trimmed[idx+1:]
+	}
+	return trimmed
+}
