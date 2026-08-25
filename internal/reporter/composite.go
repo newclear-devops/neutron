@@ -17,3 +17,9 @@ func (r *Composite) Report(jobName string, stepName string, status model.StepRes
 		reporter.Report(jobName, stepName, status, description)
 	}
 }
+
+func (r *Composite) ReportJobFinal(status model.StepResult, description string) {
+	for _, reporter := range r.reporters {
+		reporter.ReportJobFinal(status, description)
+	}
+}

@@ -98,6 +98,9 @@ func main() {
 
 	server := NewServer(config, repo, clientSet, notifyClient, ccworkRobot)
 	server.registerRoutes(r)
+	// Close out jobs whose pods died without a final runner report
+	// (checkout conflict, image pull failure, OOM) and notify their targets.
+	server.startReconciler(context.Background(), 30*time.Second)
 
 	// --- Snippet management ---
 

@@ -298,6 +298,14 @@ func (s *Server) handleStatus(c *gin.Context) {
 	})
 }
 
+// isFinalReport reports whether a status payload carries the job-level terminal
+// flag with a terminal outcome. Only such reports trigger the completion
+// notification and MarkJobCompleted; per-step reports (which also carry
+// succeeded/failed) must not.
+func isFinalReport(status internal.JobStatus) bool {
+	return status.Final && (status.Succeeded > 0 || status.Failed > 0)
+}
+
 func (s *Server) handleReport(c *gin.Context) {
 	jobName := c.Param("jobName")
 	var status internal.JobStatus
@@ -333,30 +341,19 @@ func (s *Server) handleReport(c *gin.Context) {
 			}
 		}
 	}
-	// Mark job completed and asynchronously sync final pod phase
-	if status.Succeeded > 0 || status.Failed > 0 {
-		// Notify recipients: pipeline completed
+	// A final, job-level terminal report (sent by the runner exactly once,
+	// after the last step) marks the job completed and triggers the completion
+	// notification. Per-step reports no longer trigger either — previously
+	// every step's terminal status was mistaken for job completion.
+	if isFinalReport(status) {
+		failed := status.Failed > 0
 		if dbJob, err := s.repo.GetJobByName(jobName); err == nil {
-			statusUrl := fmt.Sprintf("%s/#/status/%s", s.config.Host, jobName)
-			project := s.repo.GetWebhookConfig(dbJob.ProjectId)
-			repoUrl := project.RepoUrl
-			if repoUrl == "" {
-				repoUrl = dbJob.ProjectId
-			}
-			var title, content string
-			if status.Failed > 0 {
-				title = "❌ 流水线执行失败"
-			} else {
-				title = "✅ 流水线执行成功"
-			}
-			content = fmt.Sprintf("📂 项目: %s\n📋 任务: %s\n🔗 查看: %s", repoUrl, jobName, statusUrl)
-			if status.SourceUrl != "" {
-				content += fmt.Sprintf("\n📎 源码: %s", status.SourceUrl)
-			}
-			s.sendJobNotifications(parseNotify(dbJob.Notify), title, content)
+			s.notifyJobCompleted(dbJob, failed, status.Description)
+		} else {
+			log.Printf("notify: job %s not found, skipping completion notification: %v", jobName, err)
 		}
 		finalPhase := "Succeeded"
-		if status.Failed > 0 {
+		if failed {
 			finalPhase = "Failed"
 		}
 		go func() {

@@ -83,6 +83,11 @@ func NewRunner(workingDir string, triggerType string, jobName string, reporter m
 		}
 		if !matched {
 			reporter.Report(jobName, "", model.Success, fmt.Sprintf("Current job skipped in %s.", triggerType))
+			// No steps will run for this trigger: report a final "skipped"
+			// success and stop before Run() executes. NewRunner has no
+			// skip-signal in its contract, so we exit here (code 0) rather
+			// than running zero steps through Run().
+			reporter.ReportJobFinal(model.Success, "job skipped: trigger mismatch")
 			os.Exit(0)
 		}
 	}
@@ -95,7 +100,11 @@ func NewRunner(workingDir string, triggerType string, jobName string, reporter m
 	}
 }
 
-func (r *Runner) Run() {
+// Run executes the steps sequentially and reports each step's status. It
+// returns the process exit code: 0 when every step succeeded, 1 otherwise.
+// A job-level terminal report (ReportJobFinal) is always sent before
+// returning, so the API server knows exactly when the job finished.
+func (r *Runner) Run() int {
 	// create all step status
 	for _, step := range r.Steps {
 		r.Reporter.Report(r.JobName, step.StepName, model.Pending, "pipeline created.")
@@ -106,7 +115,8 @@ func (r *Runner) Run() {
 		if step.Command == "" {
 			r.Reporter.Report(r.JobName, step.StepName, model.Fail, "empty command.")
 			r.failRemaining(runStepIndex)
-			os.Exit(1)
+			r.Reporter.ReportJobFinal(model.Fail, fmt.Sprintf("step %s: empty command.", step.StepName))
+			return 1
 		}
 		r.Reporter.Report(r.JobName, step.StepName, model.Running, "pipeline started.")
 		cmd := exec.Command("sh", "-c", step.Command)
@@ -114,13 +124,16 @@ func (r *Runner) Run() {
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
-			errMsg := fmt.Sprintf("step failed: %v", err)
+			errMsg := fmt.Sprintf("step %s failed: %v", step.StepName, err)
 			r.Reporter.Report(r.JobName, step.StepName, model.Fail, errMsg)
 			r.failRemaining(runStepIndex + 1)
-			os.Exit(1)
+			r.Reporter.ReportJobFinal(model.Fail, errMsg)
+			return 1
 		}
 		r.Reporter.Report(r.JobName, step.StepName, model.Success, "pipeline finished.")
 	}
+	r.Reporter.ReportJobFinal(model.Success, "pipeline finished.")
+	return 0
 }
 
 func (r *Runner) failRemaining(fromIndex int) {
