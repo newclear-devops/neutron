@@ -38,7 +38,7 @@ go test ./...
 - `POST /api/report/:jobName` — runners push status back to API server for persistence
 - `POST /api/report/:jobName/link` — set a test report URL for a job (`{"report_url": "..."}`)
 - `POST /api/jobs/:jobName/rerun` — rerun a webhook-created job by recreating an identical K8s Job from its persisted spec (same commit/params/trigger, reports to platform like the original). Only jobs with a stored spec are rerunnable.
-- `GET /api/default-pipeline` — returns the global default pipeline (`{"content": "..."}`, empty if unset). Shared by the SPA editor and the pod-side runner fallback.
+- `GET /api/default-pipeline` — returns the global default pipeline (`{"content": "..."}`, empty if unset). Shared by the SPA viewer and the pod-side runner fallback.
 - `PUT /api/default-pipeline` — set the global default pipeline (`{"content": "..."}`). Validates non-empty content parses to a `model.Pipeline` with at least one job; empty content disables the fallback.
 - SPA: `cmd/api/static/index.html` — vanilla JS with hash-based routing (#/, #/projects, #/project/:id, #/status/:name, #/snippets, #/default-pipeline)
 
@@ -185,7 +185,7 @@ A single **global** default `neutron.yaml` used when a repository has no `neutro
 
 **API:** `GET /api/default-pipeline` (shared by SPA and runner), `PUT /api/default-pipeline` (validates the YAML parses to a pipeline with ≥1 job; empty content disables the fallback).
 
-**SPA frontend** (hash route `#/default-pipeline`): a single-page YAML editor (`renderDefaultPipeline`) — a `<textarea>` prefilled from `GET`, a Save button that `PUT`s after a `confirm()` ("This default configuration will be used for all repositories missing a neutron.yaml. Save?").
+**SPA frontend** (hash route `#/default-pipeline`): a read-only YAML viewer (`renderDefaultPipeline`) — a `<textarea readonly>` prefilled from `GET`, with a note explaining that updates must go through `PUT /api/default-pipeline` (body `{"content": "..."}`). There is no Save button in the UI.
 
 **Note:** the default is resolved at runtime and **not snapshotted** into `JobSpec`. A rerun of a fallback job therefore uses the *current* default, not the one active at trigger time (acceptable; defaults change rarely).
 

@@ -1070,12 +1070,16 @@
                 'This neutron.yaml is used as a fallback whenever a repository push/MR/tag arrives but the repo has no <code>neutron.yaml</code>. ' +
                 'It applies globally to all registered projects. Leave it empty to disable the fallback (webhooks for repos without neutron.yaml will then fail as before).' +
             '</p>' +
+            '<div class="card" style="max-width:720px;margin-bottom:16px">' +
+                '<p style="font-size:1.3rem;color:#606c76">The configuration below is <b>read-only</b>. ' +
+                'To update it, call the API with the full neutron.yaml content:</p>' +
+                '<pre style="background:#f8f9fa;padding:12px;border-radius:8px;overflow-x:auto;font-size:1.2rem;line-height:1.5">' +
+                escHtml('curl -X PUT /api/default-pipeline \\\n  -H "Content-Type: application/json" \\\n  -d \'{"content": "jobs:\\n  build:\\n    ..."}\'') +
+                '</pre>' +
+            '</div>' +
             '<div id="defaultPipelineMsg" style="font-size:1.3rem;margin-bottom:8px;display:none"></div>' +
             '<label for="defaultPipelineContent">Content <span style="color:#999;font-weight:400">(neutron.yaml)</span></label>' +
-            '<textarea id="defaultPipelineContent" style="width:100%;min-height:360px;font-family:\'SF Mono\',\'Fira Code\',Menlo,monospace;font-size:1.3rem;padding:12px;border:1px solid #d1d5db;border-radius:4px;resize:vertical" placeholder="jobs:\n  build:\n    trigger: [PUSH, MR]\n    steps:\n      - name: build\n        cmd: make build"></textarea>' +
-            '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">' +
-                '<button class="btn btn-primary" style="margin-top:0" id="defaultPipelineSaveBtn">Save</button>' +
-            '</div>';
+            '<textarea id="defaultPipelineContent" readonly style="width:100%;min-height:360px;font-family:\'SF Mono\',\'Fira Code\',Menlo,monospace;font-size:1.3rem;padding:12px;border:1px solid #d1d5db;border-radius:4px;resize:vertical;background:#f8f9fa" placeholder="jobs:\n  build:\n    trigger: [PUSH, MR]\n    steps:\n      - name: build\n        cmd: make build"></textarea>';
 
         var textarea = document.getElementById('defaultPipelineContent');
         var msgEl = document.getElementById('defaultPipelineMsg');
@@ -1087,23 +1091,6 @@
                 textarea.value = data.content || '';
             })
             .catch(function(err) { showDefaultPipelineMsg('Failed to load: ' + err, true); });
-
-        document.getElementById('defaultPipelineSaveBtn').onclick = function() {
-            if (!confirm('This default configuration will be used for all repositories missing a neutron.yaml. Save?')) {
-                return;
-            }
-            fetch('/api/default-pipeline', {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ content: textarea.value })
-            })
-            .then(function(r) { return r.json(); })
-            .then(function(result) {
-                if (result.error) { showDefaultPipelineMsg(result.error, true); return; }
-                showDefaultPipelineMsg('Saved.', false);
-            })
-            .catch(function(err) { showDefaultPipelineMsg('Request failed: ' + err, true); });
-        };
 
         function showDefaultPipelineMsg(text, isError) {
             msgEl.textContent = text;
