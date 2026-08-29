@@ -249,6 +249,27 @@ func (s *Server) handleStatus(c *gin.Context) {
 	if job.Status.Failed > 0 {
 		k8sStatus.Failed = 1
 	}
+	// Don't clobber an already-terminal DB status with a stale K8s read. The
+	// runner's final report (final:true) is authoritative for the outcome; a
+	// status poll racing it can read the K8s Job while it still shows Active>0
+	// and overwrite the terminal succeeded/failed with active:1, leaving the
+	// job stuck as "running" once it is marked completed.
+	//
+	// The status is re-read here (rather than trusting dbJob.Status from the
+	// top of this handler) because the runner's final report can land between
+	// the initial read and this write. This is best-effort — the reconciler's
+	// healStuckCompletedJobs is the guarantee that such jobs converge — but it
+	// removes the common race where a poll writes active:1 over a terminal
+	// outcome it simply hadn't observed yet.
+	//
+	// The guard requires Final, matching isFinalReport. Per-step reports also
+	// carry succeeded/failed without Final; treating those as terminal would
+	// freeze a mid-pipeline {succeeded:1} over K8s's active:1 and briefly show
+	// a still-running multi-step job as "succeeded".
+	if existing, err := s.repo.GetJobStatus(jobName); err == nil &&
+		existing.Final && (existing.Succeeded > 0 || existing.Failed > 0) {
+		k8sStatus = existing
+	}
 	// Update database with derived status
 	_ = s.repo.UpdateJobStatus(jobName, k8sStatus)
 

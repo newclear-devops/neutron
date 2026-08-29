@@ -64,7 +64,7 @@ go test ./...
 - `internal/gitlab/` — GitLab webhook parsing (`parser.go`)
 - `internal/codeup/` — Codeup webhook parsing (`parser.go`)
 - `internal/parser/` — shared parsing logic: `base.go` (fetch neutron.yaml), `path.go` (repo URL → API path conversion for GitLab `%2F` and Codeup `%252F`)
-- `internal/launcher/` — shared K8s Job creation (platform-agnostic)
+- `internal/launcher/` — shared K8s Job creation (platform-agnostic). Job names are `neutron-<job>-<YYYYMMDD-HHMMSS>-<4-char hex>` (see **Job Naming** below).
 - `internal/model/` — domain models: `Config`, `Pipeline`, `Job`, `Step`, `RunnerConfig` + interfaces: `Reporter`, `PipelineParser`
 - `internal/service/` — `Runner` (step execution, supports `SkipTriggerCheck`)
 - `internal/repo.go` — MySQL data access (Repository pattern)
@@ -110,6 +110,17 @@ Both use structured attachment format with title (head) and body content. A job 
 The config is parsed at trigger time and persisted as JSON on `neutron_job.notify`, so the completion handler (`POST /api/report/:jobName`, which only knows the job name) can read the same targets back via the `GetJobByName` lookup it already performs — see `sendJobNotifications` / `notifyJobCompleted` / `marshalNotify` / `parseNotify` in `cmd/api/`.
 
 **Completion semantics:** the runner sends per-step reports plus exactly one job-level final report (`ReportJobFinal`, payload flag `final: true`, sent after the last step). Only the final report triggers the completion notification and `MarkJobCompleted` — per-step reports update status only. Jobs whose K8s Job reaches a terminal state without a final report (checkout conflict, image pull failure, OOM kill) are closed out by a background reconciler (`cmd/api/reconcile.go`, 30s tick): it waits 2 minutes after the K8s terminal time for a late final report, then writes a terminal status from K8s annotations, sends the completion notification with the K8s failure condition as reason, and marks the job completed. Jobs terminal for over an hour are closed silently (no late-notification flood). Note: the runner image and API server should be deployed together — an old runner with a new API server degrades to reconciler-driven completion notifications.
+
+**Reconciler heal pass:** the same 30s reconciler tick also runs a heal step (`healStuckCompletedJobs`) that repairs jobs marked `completed` in the DB but still holding a non-terminal status (no `succeeded`/`failed`). This happens when a `GET /api/status` poll races the runner's final report and writes K8s's transient `active:1` over the terminal outcome before `MarkJobCompleted` runs — the job would otherwise stay stuck as "running" forever. The heal re-derives the terminal outcome from the K8s Job (the source of truth) and writes it back. It is idempotent, sends no notification (the final report already did), and does not `MarkJobCompleted`. A job whose K8s Job has already been TTL-cleaned cannot be healed and remains non-terminal — a known limitation bounded by the 7-day recency window.
+
+### Job Naming
+
+The K8s Job name is `neutron-<job>-<timestamp>-<suffix>`, where `<timestamp>` is `YYYYMMDD-HHMMSS` (second granularity) and `<suffix>` is a 4-char lowercase-hex random suffix (`internal/launcher/launcher.go`, `buildJobName`). The random suffix guarantees that two triggers of the same job within the same second no longer collide on the same K8s Job name (previously the timestamp alone produced `AlreadyExists` on the second trigger). The suffix sits *after* the timestamp so that consumers which parse the trailing `YYYYMMDD-HHMMSS` keep working:
+
+- DB recency filters extract the timestamp via `jobTimestampExpr()` (`internal/repo.go`), which handles both the new format (timestamp ends 20 chars from the end) and the pre-suffix format (timestamp is the last 15 chars) via a `CASE WHEN` branch.
+- The SPA derives the logical job name (`getJobLogicalName`) and parses the timestamp for log-expiry/duration with a regex that tolerates both formats.
+
+The runner is told its full name via the `FULL_JOB_NAME` env var and reports to `/api/report/<FULL_JOB_NAME>`; the logical `JOB_NAME` (from `neutron.yaml`) is only used to select steps, never to key DB/K8s lookups.
 
 ### Webhook URL Parameters
 

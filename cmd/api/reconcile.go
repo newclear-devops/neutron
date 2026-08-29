@@ -37,6 +37,10 @@ func (s *Server) startReconciler(ctx context.Context, interval time.Duration) {
 				return
 			case <-ticker.C:
 				s.reconcileOnce()
+				// Heal runs on the same tick but as a separate step so a failure
+				// to list uncompleted jobs (which returns early from
+				// reconcileOnce) does not also block the heal path.
+				s.healStuckCompletedJobs()
 			}
 		}
 	}()
@@ -89,6 +93,47 @@ func (s *Server) reconcileOnce() {
 			outcome = "failed"
 		}
 		log.Printf("reconciler: job %s %s without a final runner report (terminal %s ago), sent completion notification", j.Name, outcome, age.Truncate(time.Second))
+	}
+}
+
+// healStuckCompletedJobs corrects jobs that are marked completed in the DB but
+// whose status is still non-terminal (stuck as "running"). This happens when a
+// status poll races the runner's final report and overwrites the terminal
+// outcome with active:1 before MarkJobCompleted runs. The K8s Job is the
+// source of truth for the outcome; the terminal status is written back so the
+// status page stops showing these jobs as running.
+//
+// It runs on its own schedule (once per reconcile tick) rather than as a
+// side-effect of the uncompleted-jobs loop above, so a failure to list
+// uncompleted jobs does not also block the heal path.
+func (s *Server) healStuckCompletedJobs() {
+	jobs, err := s.repo.ListStuckCompletedJobs(7)
+	if err != nil {
+		log.Printf("reconciler: failed to list stuck completed jobs: %v", err)
+		return
+	}
+	for _, j := range jobs {
+		k8sJob, err := s.clientSet.BatchV1().Jobs(s.config.Kubernetes.Namespace).Get(context.Background(), j.Name, metav1.GetOptions{})
+		if err != nil {
+			// Deleted or not visible in K8s — nothing to derive from. Such a
+			// row (e.g. K8s Job TTL-cleaned before this ran) will remain
+			// non-terminal; this is a known limitation with no source of truth.
+			// Note: it therefore stays stuck and is re-fetched every tick, but the
+			// 7-day recency window bounds the steady-state cost.
+			continue
+		}
+		if _, ok := jobTerminalTime(&k8sJob.Status); !ok {
+			// No CompletionTime and no JobFailed condition (e.g. a job deleted
+			// mid-run, or an unusual terminal state): no outcome to derive.
+			continue
+		}
+		failed := k8sJob.Status.Succeeded == 0
+		s.updateTerminalStatus(j.Name, k8sJob, failed)
+		outcome := "succeeded"
+		if failed {
+			outcome = "failed"
+		}
+		log.Printf("reconciler: healed stuck completed job %s -> %s", j.Name, outcome)
 	}
 }
 
