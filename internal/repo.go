@@ -41,8 +41,8 @@ func (PipelineJob) TableName() string {
 }
 
 type PipelinePod struct {
-	Id     int64  `gorm:"column:id;primaryKey;autoIncrement"`
-	JobId  int64  `gorm:"column:job_id;index"`
+	Id      int64  `gorm:"column:id;primaryKey;autoIncrement"`
+	JobId   int64  `gorm:"column:job_id;index"`
 	PodName string `gorm:"column:pod_name;type:varchar(255)"`
 	PodUid  string `gorm:"column:pod_uid;type:varchar(255)"`
 	Phase   string `gorm:"column:phase;type:varchar(50)"`
@@ -118,7 +118,7 @@ type Repository struct {
 
 func NewRepository(config model.Config) *Repository {
 	db, err := gorm.Open(mysql.Open(config.Database), &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Warn),
+		Logger:                                   logger.Default.LogMode(logger.Warn),
 		DisableForeignKeyConstraintWhenMigrating: true,
 	})
 	if err != nil {
@@ -200,45 +200,61 @@ func (r *Repository) GetJobStatus(jobName string) (JobStatus, error) {
 	return status, nil
 }
 
-// cutoffDays returns the timestamp suffix used to filter job names by recency.
-// Job names follow the format neutron-<job>-YYYYMMDD-HHMMSS; the last 15 chars
-// encode the timestamp and can be compared as a string.
+// cutoffDays returns the cutoff timestamp value (YYYYMMDD-000000) used to filter
+// job names by recency. The fixed 15-char timestamp is extracted from the name
+// via jobTimestampExpr() and compared as a string.
 func cutoffDays(days int) string {
 	return time.Now().AddDate(0, 0, -days).Format("20060102") + "-000000"
 }
 
+// jobTimestampExpr returns the SQL expression extracting the fixed 15-char
+// YYYYMMDD-HHMMSS timestamp from a job name. Two name formats coexist:
+//
+//	new: neutron-<job>-YYYYMMDD-HHMMSS-<4-hex>   (timestamp ends 20 chars from end)
+//	old: neutron-<job>-YYYYMMDD-HHMMSS            (timestamp is the last 15 chars)
+//
+// In the new format the char 5 positions from the end is the '-' separator
+// before the random suffix; in the old format that position is a digit of the
+// seconds. Branching on it lets both formats yield their timestamp, so old rows
+// keep aging out of the recency windows correctly after the format change.
+func jobTimestampExpr() string {
+	return "CASE WHEN SUBSTRING(name, LENGTH(name) - 4, 1) = '-' " +
+		"THEN SUBSTRING(name, LENGTH(name) - 19, 15) " +
+		"ELSE RIGHT(name, 15) END"
+}
+
 func (r *Repository) ListProjectJobs(projectId string, days int) ([]PipelineJob, error) {
 	var jobs []PipelineJob
-	err := r.db.Where("project_id = ? AND RIGHT(name, 15) >= ?", projectId, cutoffDays(days)).
+	err := r.db.Where("project_id = ? AND "+jobTimestampExpr()+" >= ?", projectId, cutoffDays(days)).
 		Order("id DESC").Preload("Pods").Find(&jobs).Error
 	return jobs, err
 }
 
 func (r *Repository) ListAllRecentJobs(days int) ([]PipelineJob, error) {
 	var jobs []PipelineJob
-	err := r.db.Where("RIGHT(name, 15) >= ?", cutoffDays(days)).
+	err := r.db.Where(jobTimestampExpr()+" >= ?", cutoffDays(days)).
 		Order("id DESC").Preload("Pods").Find(&jobs).Error
 	return jobs, err
 }
 
 // ListRunningJobs returns not-yet-completed jobs for a project, excluding one
-// job by name. Scoped to recent jobs (RIGHT(name,15) timestamp) so a zombie row
+// job by name. Scoped to recent jobs (by the name timestamp) so a zombie row
 // that never reported terminal status doesn't count as "running" forever.
 func (r *Repository) ListRunningJobs(projectId, excludeName string, days int) ([]PipelineJob, error) {
 	var jobs []PipelineJob
 	err := r.db.Where(
-		"project_id = ? AND name <> ? AND completed = ? AND RIGHT(name, 15) >= ?",
+		"project_id = ? AND name <> ? AND completed = ? AND "+jobTimestampExpr()+" >= ?",
 		projectId, excludeName, false, cutoffDays(days),
 	).Order("id DESC").Find(&jobs).Error
 	return jobs, err
 }
 
 // ListUncompletedJobs returns not-yet-completed recent jobs (no Pods preload),
-// scoped by the RIGHT(name,15) timestamp like the other listing helpers. Used
+// scoped by the name timestamp like the other listing helpers. Used
 // by the reconciler to find jobs whose runner never reported a final status.
 func (r *Repository) ListUncompletedJobs(days int) ([]PipelineJob, error) {
 	var jobs []PipelineJob
-	err := r.db.Where("completed = ? AND RIGHT(name, 15) >= ?", false, cutoffDays(days)).
+	err := r.db.Where("completed = ? AND "+jobTimestampExpr()+" >= ?", false, cutoffDays(days)).
 		Order("id DESC").Find(&jobs).Error
 	return jobs, err
 }
