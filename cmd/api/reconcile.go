@@ -90,6 +90,38 @@ func (s *Server) reconcileOnce() {
 		}
 		log.Printf("reconciler: job %s %s without a final runner report (terminal %s ago), sent completion notification", j.Name, outcome, age.Truncate(time.Second))
 	}
+	s.healStuckCompletedJobs()
+}
+
+// healStuckCompletedJobs corrects jobs that are marked completed in the DB but
+// whose status is still non-terminal (stuck as "running"). This happens when a
+// status poll races the runner's final report and overwrites the terminal
+// outcome with active:1 before MarkJobCompleted runs. The K8s Job is the
+// source of truth for the outcome; the terminal status is written back so the
+// status page stops showing these jobs as running.
+func (s *Server) healStuckCompletedJobs() {
+	jobs, err := s.repo.ListStuckCompletedJobs(7)
+	if err != nil {
+		log.Printf("reconciler: failed to list stuck completed jobs: %v", err)
+		return
+	}
+	for _, j := range jobs {
+		k8sJob, err := s.clientSet.BatchV1().Jobs(s.config.Kubernetes.Namespace).Get(context.Background(), j.Name, metav1.GetOptions{})
+		if err != nil {
+			// Deleted or not visible in K8s — nothing to derive from; leave alone.
+			continue
+		}
+		if _, ok := jobTerminalTime(&k8sJob.Status); !ok {
+			continue // K8s job still running; not yet a candidate
+		}
+		failed := k8sJob.Status.Succeeded == 0
+		s.updateTerminalStatus(j.Name, k8sJob, failed)
+		outcome := "succeeded"
+		if failed {
+			outcome = "failed"
+		}
+		log.Printf("reconciler: healed stuck completed job %s -> %s", j.Name, outcome)
+	}
 }
 
 // updateTerminalStatus writes a terminal JobStatus derived from K8s Job

@@ -259,6 +259,31 @@ func (r *Repository) ListUncompletedJobs(days int) ([]PipelineJob, error) {
 	return jobs, err
 }
 
+// ListStuckCompletedJobs returns recent jobs that are marked completed in the
+// DB but whose status is still non-terminal (no succeeded/failed outcome).
+// These are rows the runner's final report should have made terminal but that
+// were left stuck as "running" by the handleStatus race; the reconciler heals
+// them by deriving a terminal outcome from the K8s Job.
+func (r *Repository) ListStuckCompletedJobs(days int) ([]PipelineJob, error) {
+	var jobs []PipelineJob
+	err := r.db.Where("completed = ? AND "+jobTimestampExpr()+" >= ?", true, cutoffDays(days)).
+		Order("id DESC").Find(&jobs).Error
+	if err != nil {
+		return nil, err
+	}
+	stuck := jobs[:0]
+	for _, j := range jobs {
+		var status JobStatus
+		if err := json.Unmarshal([]byte(j.Status), &status); err != nil {
+			continue
+		}
+		if status.Succeeded == 0 && status.Failed == 0 {
+			stuck = append(stuck, j)
+		}
+	}
+	return stuck, nil
+}
+
 // GetJobProjectId returns only the project_id for a job by name, avoiding the
 // cost of preloading Pods and the full status field.
 func (r *Repository) GetJobProjectId(name string) (string, error) {

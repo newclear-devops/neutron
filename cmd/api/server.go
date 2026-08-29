@@ -249,6 +249,18 @@ func (s *Server) handleStatus(c *gin.Context) {
 	if job.Status.Failed > 0 {
 		k8sStatus.Failed = 1
 	}
+	// Don't clobber an already-terminal DB status with a stale K8s read. The
+	// runner's final report (final:true) is authoritative for the outcome; a
+	// status poll racing it can read the K8s Job while it still shows Active>0
+	// and overwrite the terminal succeeded/failed with active:1, leaving the
+	// job permanently stuck as "running" once it is marked completed.
+	if dbErr == nil {
+		var existing internal.JobStatus
+		if err := json.Unmarshal([]byte(dbJob.Status), &existing); err == nil &&
+			(existing.Succeeded > 0 || existing.Failed > 0) {
+			k8sStatus = existing
+		}
+	}
 	// Update database with derived status
 	_ = s.repo.UpdateJobStatus(jobName, k8sStatus)
 
