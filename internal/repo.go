@@ -262,8 +262,9 @@ func (r *Repository) ListUncompletedJobs(days int) ([]PipelineJob, error) {
 // ListStuckCompletedJobs returns recent jobs that are marked completed in the
 // DB but whose status is still non-terminal (no succeeded/failed outcome).
 // These are rows the runner's final report should have made terminal but that
-// were left stuck as "running" by the handleStatus race; the reconciler heals
-// them by deriving a terminal outcome from the K8s Job.
+// were left stuck as "running" by the handleStatus race (or never reported at
+// all — an empty status); the reconciler heals them by deriving a terminal
+// outcome from the K8s Job.
 func (r *Repository) ListStuckCompletedJobs(days int) ([]PipelineJob, error) {
 	var jobs []PipelineJob
 	err := r.db.Where("completed = ? AND "+jobTimestampExpr()+" >= ?", true, cutoffDays(days)).
@@ -271,17 +272,31 @@ func (r *Repository) ListStuckCompletedJobs(days int) ([]PipelineJob, error) {
 	if err != nil {
 		return nil, err
 	}
-	stuck := jobs[:0]
+	stuck := make([]PipelineJob, 0, len(jobs))
 	for _, j := range jobs {
-		var status JobStatus
-		if err := json.Unmarshal([]byte(j.Status), &status); err != nil {
-			continue
-		}
-		if status.Succeeded == 0 && status.Failed == 0 {
+		if isStuckJobStatus(j.Status) {
 			stuck = append(stuck, j)
 		}
 	}
 	return stuck, nil
+}
+
+// isStuckJobStatus reports whether a persisted status value represents a job
+// that has no terminal outcome — and is therefore a candidate for the
+// reconciler to heal from the K8s Job. Both an empty status (the runner never
+// reported anything, e.g. checkout conflict / image pull failure) and a parsed
+// status with no succeeded/failed flag count as stuck. Corrupted non-empty JSON
+// is not treated as stuck: its outcome is unknowable and not clearly a
+// "running" state.
+func isStuckJobStatus(statusJSON string) bool {
+	if statusJSON == "" {
+		return true
+	}
+	var status JobStatus
+	if err := json.Unmarshal([]byte(statusJSON), &status); err != nil {
+		return false
+	}
+	return status.Succeeded == 0 && status.Failed == 0
 }
 
 // GetJobProjectId returns only the project_id for a job by name, avoiding the

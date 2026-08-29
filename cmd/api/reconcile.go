@@ -37,6 +37,10 @@ func (s *Server) startReconciler(ctx context.Context, interval time.Duration) {
 				return
 			case <-ticker.C:
 				s.reconcileOnce()
+				// Heal runs on the same tick but as a separate step so a failure
+				// to list uncompleted jobs (which returns early from
+				// reconcileOnce) does not also block the heal path.
+				s.healStuckCompletedJobs()
 			}
 		}
 	}()
@@ -90,7 +94,6 @@ func (s *Server) reconcileOnce() {
 		}
 		log.Printf("reconciler: job %s %s without a final runner report (terminal %s ago), sent completion notification", j.Name, outcome, age.Truncate(time.Second))
 	}
-	s.healStuckCompletedJobs()
 }
 
 // healStuckCompletedJobs corrects jobs that are marked completed in the DB but
@@ -99,6 +102,10 @@ func (s *Server) reconcileOnce() {
 // outcome with active:1 before MarkJobCompleted runs. The K8s Job is the
 // source of truth for the outcome; the terminal status is written back so the
 // status page stops showing these jobs as running.
+//
+// It runs on its own schedule (once per reconcile tick) rather than as a
+// side-effect of the uncompleted-jobs loop above, so a failure to list
+// uncompleted jobs does not also block the heal path.
 func (s *Server) healStuckCompletedJobs() {
 	jobs, err := s.repo.ListStuckCompletedJobs(7)
 	if err != nil {
@@ -108,7 +115,9 @@ func (s *Server) healStuckCompletedJobs() {
 	for _, j := range jobs {
 		k8sJob, err := s.clientSet.BatchV1().Jobs(s.config.Kubernetes.Namespace).Get(context.Background(), j.Name, metav1.GetOptions{})
 		if err != nil {
-			// Deleted or not visible in K8s — nothing to derive from; leave alone.
+			// Deleted or not visible in K8s — nothing to derive from. Such a
+			// row (e.g. K8s Job TTL-cleaned before this ran) will remain
+			// non-terminal; this is a known limitation with no source of truth.
 			continue
 		}
 		if _, ok := jobTerminalTime(&k8sJob.Status); !ok {
