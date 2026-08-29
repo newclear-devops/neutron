@@ -205,8 +205,8 @@
     }
 
     function isPodLogExpired(podName) {
-        // Pod name format: neutron-{jobName}-{YYYYMMDD-HHMMSS}
-        var match = podName.match(/(\d{8}-\d{6})$/);
+        // Pod name format: neutron-{jobName}-{YYYYMMDD-HHMMSS}-{random}{podSuffix}
+        var match = podName.match(/(\d{8}-\d{6})/);
         if (!match) return false;
         var ts = match[1];
         var y = parseInt(ts.substring(0, 4), 10);
@@ -543,11 +543,11 @@
                         '<tr><td style="padding:8px;border-bottom:1px solid #f3f4f6"><code>TRIGGER</code></td><td style="padding:8px;border-bottom:1px solid #f3f4f6">Trigger type</td><td style="padding:8px;border-bottom:1px solid #f3f4f6"><code>PUSH</code>, <code>MR</code>, <code>TAG</code>, <code>API</code></td></tr>' +
                         '<tr><td style="padding:8px;border-bottom:1px solid #f3f4f6"><code>CODE_REF</code></td><td style="padding:8px;border-bottom:1px solid #f3f4f6">Branch name (PUSH), tag name (TAG), or empty (MR)</td><td style="padding:8px;border-bottom:1px solid #f3f4f6"><code>main</code>, <code>v1.2.3</code>, <code></code></td></tr>' +
                         '<tr><td style="padding:8px;border-bottom:1px solid #f3f4f6"><code>JOB_NAME</code></td><td style="padding:8px;border-bottom:1px solid #f3f4f6">Job name from neutron.yaml</td><td style="padding:8px;border-bottom:1px solid #f3f4f6"><code>build</code></td></tr>' +
-                        '<tr><td style="padding:8px;border-bottom:1px solid #f3f4f6"><code>FULL_JOB_NAME</code></td><td style="padding:8px;border-bottom:1px solid #f3f4f6">Full K8s job name with timestamp</td><td style="padding:8px;border-bottom:1px solid #f3f4f6"><code>neutron-build-20250101-120000</code></td></tr>' +
+                        '<tr><td style="padding:8px;border-bottom:1px solid #f3f4f6"><code>FULL_JOB_NAME</code></td><td style="padding:8px;border-bottom:1px solid #f3f4f6">Full K8s job name with timestamp and random suffix</td><td style="padding:8px;border-bottom:1px solid #f3f4f6"><code>neutron-build-20250101-120000-3f2a</code></td></tr>' +
                         '<tr><td style="padding:8px;border-bottom:1px solid #f3f4f6"><code>COMMIT_SHA</code></td><td style="padding:8px;border-bottom:1px solid #f3f4f6">Git commit SHA being built</td><td style="padding:8px;border-bottom:1px solid #f3f4f6"><code>a1b2c3d4e5f6...</code></td></tr>' +
                         '<tr><td style="padding:8px;border-bottom:1px solid #f3f4f6"><code>GIT_REPO_URL</code></td><td style="padding:8px;border-bottom:1px solid #f3f4f6">Repository clone URL (SSH)</td><td style="padding:8px;border-bottom:1px solid #f3f4f6"><code>git@gitlab.example.com:group/project.git</code></td></tr>' +
                         '<tr><td style="padding:8px;border-bottom:1px solid #f3f4f6"><code>PROJECT_NAME</code></td><td style="padding:8px;border-bottom:1px solid #f3f4f6">Repository name (last path segment)</td><td style="padding:8px;border-bottom:1px solid #f3f4f6"><code>project</code></td></tr>' +
-                        '<tr><td style="padding:8px;border-bottom:1px solid #f3f4f6"><code>PIPELINE_URL</code></td><td style="padding:8px;border-bottom:1px solid #f3f4f6">Neutron UI link to job status page</td><td style="padding:8px;border-bottom:1px solid #f3f4f6"><code>https://neutron.example.com/#/status/neutron-build-20250101-120000</code></td></tr>' +
+                        '<tr><td style="padding:8px;border-bottom:1px solid #f3f4f6"><code>PIPELINE_URL</code></td><td style="padding:8px;border-bottom:1px solid #f3f4f6">Neutron UI link to job status page</td><td style="padding:8px;border-bottom:1px solid #f3f4f6"><code>https://neutron.example.com/#/status/neutron-build-20250101-120000-3f2a</code></td></tr>' +
                         '<tr><td style="padding:8px;border-bottom:1px solid #f3f4f6"><code>POD_NAME</code></td><td style="padding:8px;border-bottom:1px solid #f3f4f6">Kubernetes pod name</td><td style="padding:8px;border-bottom:1px solid #f3f4f6"><code>neutron-build-20250101-120000-abcde</code></td></tr>' +
                         '<tr><td style="padding:8px;border-bottom:1px solid #f3f4f6"><code>POD_NAMESPACE</code></td><td style="padding:8px;border-bottom:1px solid #f3f4f6">Kubernetes namespace</td><td style="padding:8px;border-bottom:1px solid #f3f4f6"><code>default</code></td></tr>' +
                         '<tr><td style="padding:8px;border-bottom:1px solid #f3f4f6"><code>RUNNER_PLATFORM</code></td><td style="padding:8px;border-bottom:1px solid #f3f4f6">Code hosting platform</td><td style="padding:8px;border-bottom:1px solid #f3f4f6"><code>gitlab</code>, <code>codeup</code></td></tr>' +
@@ -663,7 +663,9 @@
 
     // --- Project Jobs ---
     function getJobLogicalName(fullName) {
-        return (fullName || '').replace(/^neutron-/, '').replace(/-\d{8}-\d{6}$/, '');
+        // Job name format: neutron-{jobName}-{YYYYMMDD-HHMMSS}[-{4-char random suffix}]
+        // The random suffix was added later; tolerate both old and new formats.
+        return (fullName || '').replace(/^neutron-/, '').replace(/-\d{8}-\d{6}(?:-[0-9a-f]{4})?$/, '');
     }
 
     function renderProjectJobs(projectId) {
@@ -763,7 +765,7 @@
             }
             // Calculate duration from job name timestamp to completion time
             var durationHtml = '-';
-            var nameMatch = (job.Name || '').match(/(\d{8}-\d{6})$/);
+            var nameMatch = (job.Name || '').match(/(\d{8}-\d{6})/);
             if (nameMatch) {
                 var ts = nameMatch[1];
                 var y = parseInt(ts.substring(0, 4), 10);

@@ -1,14 +1,16 @@
 package launcher
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
-	"strings"
 	batchv1 "k8s.io/api/batch/v1"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"neutron/internal/model"
 	"neutron/internal/parser"
+	"strings"
 	"time"
 )
 
@@ -21,8 +23,8 @@ type Launcher struct {
 	SshKeyName       string
 	ImagePullSecrets []string
 	Platform         string
-	PodApiUrl        string          // override NEUTRON_API_URL for pods (local dev)
-	ExtraEnv         []v1.EnvVar     // platform-specific env vars (e.g. TARGET_BRANCH for GitLab MR)
+	PodApiUrl        string           // override NEUTRON_API_URL for pods (local dev)
+	ExtraEnv         []v1.EnvVar      // platform-specific env vars (e.g. TARGET_BRANCH for GitLab MR)
 	Resources        *model.Resources // job-level resource requirements
 }
 
@@ -44,7 +46,7 @@ func NewLauncher(namespace string, runnerConfig model.RunnerConfig, initImage st
 
 func (l *Launcher) CreateJob(neutronHost string) *batchv1.Job {
 	ts := time.Now().Format("20060102-150405")
-	fullJobName := fmt.Sprintf("neutron-%s-%s", l.RunnerConfig.JobName, ts)
+	fullJobName := buildJobName(l.RunnerConfig.JobName, ts)
 	var checkoutCommand string
 	if l.RunnerConfig.Trigger == "MR" && l.RunnerConfig.TargetBranch != "" {
 		// clone target branch, fetch source commit, merge
@@ -149,7 +151,7 @@ func (l *Launcher) CreateJob(neutronHost string) *batchv1.Job {
 							},
 						},
 					},
-					RestartPolicy:   v1.RestartPolicyNever,
+					RestartPolicy:    v1.RestartPolicyNever,
 					ImagePullSecrets: l.imagePullSecrets(),
 					Volumes: []v1.Volume{
 						{Name: "pipeline", VolumeSource: v1.VolumeSource{EmptyDir: &v1.EmptyDirVolumeSource{}}},
@@ -181,6 +183,30 @@ func (l *Launcher) podApiUrl() string {
 
 func int32Ptr(i int32) *int32 {
 	return &i
+}
+
+// buildJobName constructs a unique K8s Job name from a logical job name and a
+// second-granularity timestamp. The name is `neutron-<job>-<ts>-<random>`, where
+// the 4-char random suffix ensures two triggers of the same job within the same
+// second no longer collide (the timestamp alone previously did). The suffix sits
+// after the timestamp so existing consumers that parse the trailing
+// `YYYYMMDD-HHMMSS` (DB recency filters, frontend duration/log-expiry) keep
+// working unchanged.
+func buildJobName(jobName, ts string) string {
+	return fmt.Sprintf("neutron-%s-%s-%s", jobName, ts, randSuffix())
+}
+
+// randSuffix returns a 4-character lowercase hex string (16 random bits) for the
+// job-name uniqueness suffix. crypto/rand is used so two same-second triggers
+// still diverge with overwhelming probability.
+func randSuffix() string {
+	var b [2]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// crypto/rand failure is effectively unreachable; fall back to a
+		// non-random suffix so job creation still proceeds rather than aborting.
+		return "0000"
+	}
+	return hex.EncodeToString(b[:])
 }
 
 func (l *Launcher) imagePullSecrets() []v1.LocalObjectReference {
