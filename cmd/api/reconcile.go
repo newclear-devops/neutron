@@ -118,10 +118,14 @@ func (s *Server) healStuckCompletedJobs() {
 			// Deleted or not visible in K8s — nothing to derive from. Such a
 			// row (e.g. K8s Job TTL-cleaned before this ran) will remain
 			// non-terminal; this is a known limitation with no source of truth.
+			// Note: it therefore stays stuck and is re-fetched every tick, but the
+			// 7-day recency window bounds the steady-state cost.
 			continue
 		}
 		if _, ok := jobTerminalTime(&k8sJob.Status); !ok {
-			continue // K8s job still running; not yet a candidate
+			// No CompletionTime and no JobFailed condition (e.g. a job deleted
+			// mid-run, or an unusual terminal state): no outcome to derive.
+			continue
 		}
 		failed := k8sJob.Status.Succeeded == 0
 		s.updateTerminalStatus(j.Name, k8sJob, failed)

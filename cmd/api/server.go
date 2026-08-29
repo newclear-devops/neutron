@@ -261,8 +261,13 @@ func (s *Server) handleStatus(c *gin.Context) {
 	// healStuckCompletedJobs is the guarantee that such jobs converge — but it
 	// removes the common race where a poll writes active:1 over a terminal
 	// outcome it simply hadn't observed yet.
+	//
+	// The guard requires Final, matching isFinalReport. Per-step reports also
+	// carry succeeded/failed without Final; treating those as terminal would
+	// freeze a mid-pipeline {succeeded:1} over K8s's active:1 and briefly show
+	// a still-running multi-step job as "succeeded".
 	if existing, err := s.repo.GetJobStatus(jobName); err == nil &&
-		(existing.Succeeded > 0 || existing.Failed > 0) {
+		existing.Final && (existing.Succeeded > 0 || existing.Failed > 0) {
 		k8sStatus = existing
 	}
 	// Update database with derived status

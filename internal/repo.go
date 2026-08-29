@@ -267,7 +267,11 @@ func (r *Repository) ListUncompletedJobs(days int) ([]PipelineJob, error) {
 // outcome from the K8s Job.
 func (r *Repository) ListStuckCompletedJobs(days int) ([]PipelineJob, error) {
 	var jobs []PipelineJob
-	err := r.db.Where("completed = ? AND "+jobTimestampExpr()+" >= ?", true, cutoffDays(days)).
+	// Only name + status are needed: name keys the K8s lookup in the reconciler
+	// and status decides "stuck". Pulling notify/spec (large text blobs) would
+	// inflate this per-tick scan over all recently-completed jobs for nothing.
+	err := r.db.Select("name", "status").
+		Where("completed = ? AND "+jobTimestampExpr()+" >= ?", true, cutoffDays(days)).
 		Order("id DESC").Find(&jobs).Error
 	if err != nil {
 		return nil, err
