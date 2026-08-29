@@ -201,21 +201,26 @@ func (r *Repository) GetJobStatus(jobName string) (JobStatus, error) {
 }
 
 // cutoffDays returns the cutoff timestamp value (YYYYMMDD-000000) used to filter
-// job names by recency.
-//
-// Job names follow the format neutron-<job>-YYYYMMDD-HHMMSS-<4-char random>. The
-// fixed 15-char timestamp is the substring ending 20 chars from the end (4-char
-// random + `-` + timestamp), so filters compare it via jobTimestampExpr() rather
-// than RIGHT(name,15), which would otherwise grab the random suffix instead.
+// job names by recency. The fixed 15-char timestamp is extracted from the name
+// via jobTimestampExpr() and compared as a string.
 func cutoffDays(days int) string {
 	return time.Now().AddDate(0, 0, -days).Format("20060102") + "-000000"
 }
 
 // jobTimestampExpr returns the SQL expression extracting the fixed 15-char
-// YYYYMMDD-HHMMSS timestamp from a job name (the substring ending 20 chars from
-// the end). Used by the recency filters so they survive the random suffix.
+// YYYYMMDD-HHMMSS timestamp from a job name. Two name formats coexist:
+//
+//	new: neutron-<job>-YYYYMMDD-HHMMSS-<4-hex>   (timestamp ends 20 chars from end)
+//	old: neutron-<job>-YYYYMMDD-HHMMSS            (timestamp is the last 15 chars)
+//
+// In the new format the char 5 positions from the end is the '-' separator
+// before the random suffix; in the old format that position is a digit of the
+// seconds. Branching on it lets both formats yield their timestamp, so old rows
+// keep aging out of the recency windows correctly after the format change.
 func jobTimestampExpr() string {
-	return "SUBSTRING(name, LENGTH(name) - 19, 15)"
+	return "CASE WHEN SUBSTRING(name, LENGTH(name) - 4, 1) = '-' " +
+		"THEN SUBSTRING(name, LENGTH(name) - 19, 15) " +
+		"ELSE RIGHT(name, 15) END"
 }
 
 func (r *Repository) ListProjectJobs(projectId string, days int) ([]PipelineJob, error) {
