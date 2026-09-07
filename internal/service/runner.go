@@ -49,7 +49,8 @@ func fetchDefaultPipeline(apiUrl string) ([]byte, error) {
 
 func NewRunner(workingDir string, triggerType string, jobName string, reporter model.Reporter, apiUrl string, skipTriggerCheck ...bool) *Runner {
 	data, err := os.ReadFile(path.Join(workingDir, "neutron.yaml"))
-	if err != nil {
+	hasRepoFile := err == nil
+	if !hasRepoFile {
 		// Repo has no neutron.yaml — fall back to the globally-configured
 		// default pipeline fetched from the Neutron API.
 		log.Printf("neutron.yaml not readable (%v), falling back to default pipeline from %s", err, apiUrl)
@@ -71,16 +72,20 @@ func NewRunner(workingDir string, triggerType string, jobName string, reporter m
 	// Job-level fallback: if the repo's neutron.yaml exists but does not define
 	// this job, look it up in the global default pipeline. The repo job always
 	// wins when both define the name (whole-job override, no field-level merge).
-	if _, ok := pipeline.Jobs[jobName]; !ok {
+	// Skipped when the repo has no neutron.yaml (we already fell back to the
+	// default above, so re-fetching it could not help).
+	if _, ok := pipeline.Jobs[jobName]; !ok && hasRepoFile {
 		log.Printf("job %s not found in repo neutron.yaml, checking default pipeline from %s", jobName, apiUrl)
 		fallback, ferr := fetchDefaultPipeline(apiUrl)
-		if ferr == nil && len(fallback) > 0 {
+		if ferr != nil {
+			log.Printf("runner: failed to fetch default pipeline for job fallback: %v", ferr)
+		} else if len(fallback) > 0 {
 			var defaultPipeline model.Pipeline
-			if uerr := yaml.Unmarshal(fallback, &defaultPipeline); uerr == nil {
-				if defaultJob, dok := defaultPipeline.Jobs[jobName]; dok {
-					log.Printf("using default pipeline job %s", jobName)
-					pipeline.Jobs[jobName] = defaultJob
-				}
+			if uerr := yaml.Unmarshal(fallback, &defaultPipeline); uerr != nil {
+				log.Printf("runner: default pipeline is invalid yaml: %v", uerr)
+			} else if job, dok := model.ResolveJob(pipeline, defaultPipeline, jobName); dok {
+				log.Printf("using default pipeline job %s", jobName)
+				pipeline.Jobs[jobName] = job
 			}
 		}
 	}

@@ -189,6 +189,22 @@ A single **global** default `neutron.yaml` used when a repository has no `neutro
 
 **Note:** the default is resolved at runtime and **not snapshotted** into `JobSpec`. A rerun of a fallback job therefore uses the *current* default, not the one active at trigger time (acceptable; defaults change rarely).
 
+### Job-Level Fallback (scope & impact)
+
+On top of the file-level fallback above, there is a **job-level** fallback: when a repository *has* its own `neutron.yaml` but that file does not define a particular job, Neutron looks the job up in the global default pipeline by name.
+
+**Semantics:** the repository job always wins for same-named jobs — the whole job definition is overridden, there is **no field-level merge**. A default job is only consulted when the repository's `neutron.yaml` does not define that job name at all.
+
+**Where it applies (and where it does NOT):**
+
+- **Trigger API** (`POST /api/trigger`) — if `job_name` is missing from the repo's `neutron.yaml`, `handleTrigger` (`cmd/api/server.go`) loads the default pipeline and resolves the job from it.
+- **Runner** (pod side) — `service.NewRunner` reads `/repo/neutron.yaml`; if the job is absent there, it fetches `GET /api/default-pipeline` and resolves the job from it.
+- **Webhook is unchanged** — webhooks are trigger-driven and never name a job, so they still use only the repo's own `neutron.yaml` (or the default *whole-pipeline* on 404). Default jobs do **not** run on repos that have their own `neutron.yaml` via webhooks.
+
+**Shared resolution logic:** both paths resolve jobs through `model.ResolveJob(repo, def, name)` (`internal/model/pipeline.go`), which enforces the "repo wins" rule in one place. The default pipeline is loaded lazily and at most once per request/run; load/YAML errors are logged (not swallowed) so a broken default is distinguishable from a genuinely missing job.
+
+**Impact to keep in mind when editing the default:** a job added to the default pipeline becomes runnable on **every** registered project that does not already define that job name (via trigger API). Editing the default therefore has a wide blast radius across projects — this is broader than the file-level fallback, which only affects projects with *no* `neutron.yaml` at all.
+
 ## Conventions
 
 - Go 1.23.0, Go modules (no vendor)
