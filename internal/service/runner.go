@@ -49,7 +49,8 @@ func fetchDefaultPipeline(apiUrl string) ([]byte, error) {
 
 func NewRunner(workingDir string, triggerType string, jobName string, reporter model.Reporter, apiUrl string, skipTriggerCheck ...bool) *Runner {
 	data, err := os.ReadFile(path.Join(workingDir, "neutron.yaml"))
-	if err != nil {
+	hasRepoFile := err == nil
+	if !hasRepoFile {
 		// Repo has no neutron.yaml — fall back to the globally-configured
 		// default pipeline fetched from the Neutron API.
 		log.Printf("neutron.yaml not readable (%v), falling back to default pipeline from %s", err, apiUrl)
@@ -68,8 +69,28 @@ func NewRunner(workingDir string, triggerType string, jobName string, reporter m
 	if err != nil {
 		log.Fatal(err)
 	}
+	// Job-level fallback: if the repo's neutron.yaml exists but does not define
+	// this job, look it up in the global default pipeline. The repo job always
+	// wins when both define the name (whole-job override, no field-level merge).
+	// Skipped when the repo has no neutron.yaml (we already fell back to the
+	// default above, so re-fetching it could not help).
+	if _, ok := pipeline.Jobs[jobName]; !ok && hasRepoFile {
+		log.Printf("job %s not found in repo neutron.yaml, checking default pipeline from %s", jobName, apiUrl)
+		fallback, ferr := fetchDefaultPipeline(apiUrl)
+		if ferr != nil {
+			log.Printf("runner: failed to fetch default pipeline for job fallback: %v", ferr)
+		} else if len(fallback) > 0 {
+			var defaultPipeline model.Pipeline
+			if uerr := yaml.Unmarshal(fallback, &defaultPipeline); uerr != nil {
+				log.Printf("runner: default pipeline is invalid yaml: %v", uerr)
+			} else if job, dok := model.ResolveJob(pipeline, defaultPipeline, jobName); dok {
+				log.Printf("using default pipeline job %s", jobName)
+				pipeline.Jobs[jobName] = job
+			}
+		}
+	}
 	if _, ok := pipeline.Jobs[jobName]; !ok {
-		log.Fatalf("pipeline job %s not found", jobName)
+		log.Fatalf("pipeline job %s not found (checked repo neutron.yaml and default pipeline)", jobName)
 	}
 	// Skip trigger check if requested (e.g. API-triggered jobs)
 	skip := len(skipTriggerCheck) > 0 && skipTriggerCheck[0]

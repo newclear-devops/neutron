@@ -788,14 +788,19 @@ func (s *Server) handleTrigger(c *gin.Context) {
 
 	// Fetch neutron.yaml from repo at given ref
 	pipeline, err := parser.FetchPipeline(platform, req.RepoUrl, req.Ref, baseCfg.Url, baseCfg.Token, baseCfg.SkipTLSVerify)
+	// defaultPipeline is loaded lazily, at most once, and reused for both the
+	// file-level (404) and job-level fallbacks.
+	var defaultPipeline *model.Pipeline
 	if err != nil {
 		// Fall back to the configured default pipeline when the repo has no neutron.yaml.
 		if errors.Is(err, parser.ErrPipelineNotFound) {
-			pipeline, err = s.defaultPipeline()
-			if err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			dp, derr := s.defaultPipeline()
+			if derr != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": derr.Error()})
 				return
 			}
+			defaultPipeline = &dp
+			pipeline = dp
 			log.Printf("trigger: repo %s has no neutron.yaml at ref %s, using default pipeline", req.RepoUrl, req.Ref)
 		} else {
 			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("failed to fetch pipeline: %v", err)})
@@ -803,8 +808,22 @@ func (s *Server) handleTrigger(c *gin.Context) {
 		}
 	}
 
-	// Find the specified job
+	// Resolve the requested job: the repo's neutron.yaml first, then the global
+	// default pipeline. The repo job always wins for same-named jobs
+	// (whole-job override, no field-level merge).
 	job, ok := pipeline.Jobs[req.JobName]
+	if !ok {
+		if defaultPipeline == nil {
+			if dp, derr := s.defaultPipeline(); derr == nil {
+				defaultPipeline = &dp
+			} else {
+				log.Printf("trigger: job %q not in repo neutron.yaml and default pipeline unavailable: %v", req.JobName, derr)
+			}
+		}
+		if defaultPipeline != nil {
+			job, ok = model.ResolveJob(pipeline, *defaultPipeline, req.JobName)
+		}
+	}
 	if !ok {
 		jobNames := make([]string, 0, len(pipeline.Jobs))
 		for name := range pipeline.Jobs {

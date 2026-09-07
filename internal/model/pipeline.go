@@ -4,6 +4,20 @@ type Pipeline struct {
 	Jobs map[string]Job `yaml:"jobs"`
 }
 
+// ResolveJob returns the job named name, preferring the repository pipeline.
+// When the repository pipeline does not define the job, it falls back to the
+// same-named job in the default pipeline. The repository job always wins for
+// same-named jobs (whole-job override, no field-level merge).
+func ResolveJob(repo, def Pipeline, name string) (Job, bool) {
+	if job, ok := repo.Jobs[name]; ok {
+		return job, true
+	}
+	if job, ok := def.Jobs[name]; ok {
+		return job, true
+	}
+	return Job{}, false
+}
+
 type Job struct {
 	Image     string     `yaml:"image"`
 	Trigger   []string   `yaml:"trigger"`
