@@ -785,8 +785,19 @@ func (s *Server) handleTrigger(c *gin.Context) {
 		}
 	}
 
-	// Find the specified job
+	// Find the specified job. If the repo's neutron.yaml lacks it, fall back to
+	// the same-named job in the global default pipeline. The repo job always
+	// wins when both define the name (whole-job override, no field-level merge).
 	job, ok := pipeline.Jobs[req.JobName]
+	if !ok {
+		if defaultPipeline, derr := s.defaultPipeline(); derr == nil {
+			if defaultJob, dok := defaultPipeline.Jobs[req.JobName]; dok {
+				log.Printf("trigger: repo=%s ref=%s job %q not in repo neutron.yaml, using default pipeline", req.RepoUrl, req.Ref, req.JobName)
+				job = defaultJob
+				ok = true
+			}
+		}
+	}
 	if !ok {
 		jobNames := make([]string, 0, len(pipeline.Jobs))
 		for name := range pipeline.Jobs {

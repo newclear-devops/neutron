@@ -68,8 +68,24 @@ func NewRunner(workingDir string, triggerType string, jobName string, reporter m
 	if err != nil {
 		log.Fatal(err)
 	}
+	// Job-level fallback: if the repo's neutron.yaml exists but does not define
+	// this job, look it up in the global default pipeline. The repo job always
+	// wins when both define the name (whole-job override, no field-level merge).
 	if _, ok := pipeline.Jobs[jobName]; !ok {
-		log.Fatalf("pipeline job %s not found", jobName)
+		log.Printf("job %s not found in repo neutron.yaml, checking default pipeline from %s", jobName, apiUrl)
+		fallback, ferr := fetchDefaultPipeline(apiUrl)
+		if ferr == nil && len(fallback) > 0 {
+			var defaultPipeline model.Pipeline
+			if uerr := yaml.Unmarshal(fallback, &defaultPipeline); uerr == nil {
+				if defaultJob, dok := defaultPipeline.Jobs[jobName]; dok {
+					log.Printf("using default pipeline job %s", jobName)
+					pipeline.Jobs[jobName] = defaultJob
+				}
+			}
+		}
+	}
+	if _, ok := pipeline.Jobs[jobName]; !ok {
+		log.Fatalf("pipeline job %s not found (checked repo neutron.yaml and default pipeline)", jobName)
 	}
 	// Skip trigger check if requested (e.g. API-triggered jobs)
 	skip := len(skipTriggerCheck) > 0 && skipTriggerCheck[0]
