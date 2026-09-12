@@ -11,13 +11,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include:
-          - goos: linux
-            goarch: amd64
-          - goos: linux
-            goarch: arm64
+
     steps:
       - uses: actions/checkout@v4
 
@@ -25,49 +19,41 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # Both targets are cross-compiled in a single job: with a matrix the two
+      # jobs would race to create the release they both upload to.
       - name: Build binaries
-        env:
-          CGO_ENABLED: 0
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
         run: |
-          go build -trimpath -ldflags="-s -w" -o neutron-api-${{ matrix.goos }}-${{ matrix.goarch }} ./cmd/api
-          go build -trimpath -ldflags="-s -w" -o neutron-gitlab-runner-${{ matrix.goos }}-${{ matrix.goarch }} ./cmd/gitlab-runner
-          go build -trimpath -ldflags="-s -w" -o neutron-codeup-runner-${{ matrix.goos }}-${{ matrix.goarch }} ./cmd/codeup-runner
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: binaries-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: |
-            neutron-api-${{ matrix.goos }}-${{ matrix.goarch }}
-            neutron-gitlab-runner-${{ matrix.goos }}-${{ matrix.goarch }}
-            neutron-codeup-runner-${{ matrix.goos }}-${{ matrix.goarch }}
-
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: dist
-          merge-multiple: true
+          set -euo pipefail
+          for arch in amd64 arm64; do
+            export CGO_ENABLED=0 GOOS=linux GOARCH="$arch"
+            go build -trimpath -ldflags="-s -w" -o "neutron-api-linux-$arch" ./cmd/api
+            go build -trimpath -ldflags="-s -w" -o "neutron-gitlab-runner-linux-$arch" ./cmd/gitlab-runner
+            go build -trimpath -ldflags="-s -w" -o "neutron-codeup-runner-linux-$arch" ./cmd/codeup-runner
+          done
 
       - name: Create checksums
         run: |
-          cd dist
-          sha256sum * > checksums-sha256.txt
+          set -euo pipefail
+          sha256sum neutron-api-* neutron-gitlab-runner-* neutron-codeup-runner-* > checksums-sha256.txt
           cat checksums-sha256.txt
 
-      - name: Create release
-        uses: softprops/action-gh-release@v2
-        with:
-          generate_release_notes: true
-          files: |
-            dist/neutron-api-*
-            dist/neutron-gitlab-runner-*
-            dist/neutron-codeup-runner-*
-            dist/checksums-sha256.txt
+      # Publish straight to the GitHub Release instead of going through
+      # artifacts: release assets are permanent and do not consume the
+      # (small, org-wide) Actions artifact storage quota.
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          files=(
+            neutron-api-linux-amd64 neutron-api-linux-arm64
+            neutron-gitlab-runner-linux-amd64 neutron-gitlab-runner-linux-arm64
+            neutron-codeup-runner-linux-amd64 neutron-codeup-runner-linux-arm64
+            checksums-sha256.txt
+          )
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "${files[@]}" --clobber
+          else
+            gh release create "$tag" --title "$tag" --generate-notes "${files[@]}"
+          fi
