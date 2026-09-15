@@ -41,6 +41,18 @@ func main() {
 		log.Fatal(err)
 	}
 
+	if ttl := config.Kubernetes.EffectiveJobTtlSeconds(); ttl != nil {
+		log.Printf("finished pipeline jobs are auto-deleted by Kubernetes after %s", time.Duration(*ttl)*time.Second)
+		if d := time.Duration(*ttl) * time.Second; d < reconcileGracePeriod {
+			// Below the grace period the K8s Job can disappear before the
+			// reconciler reads it, stranding rows that never got a final report.
+			log.Printf("WARNING: job-ttl-minutes is shorter than the reconciler grace period (%s); "+
+				"jobs that never report a final status may be stuck as running forever", reconcileGracePeriod)
+		}
+	} else {
+		log.Printf("finished pipeline jobs are kept indefinitely (job-ttl-minutes disabled); clean them up manually")
+	}
+
 	repo := internal.NewRepository(config)
 
 	// Seed snippet cache from GitLab on startup (non-fatal on failure).

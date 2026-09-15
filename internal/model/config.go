@@ -1,5 +1,7 @@
 package model
 
+import "math"
+
 type Config struct {
 	Host       string              `yaml:"host"`
 	Port       int                 `yaml:"port"`
@@ -28,6 +30,45 @@ type KubernetesConfig struct {
 	CheckoutImage    string   `yaml:"checkout-image"`      // dedicated image for git checkout (must include git + ssh)
 	ImagePullSecrets []string `yaml:"image-pull-secrets,omitempty"` // K8s image pull secret names
 	PodApiUrl        string   `yaml:"pod-api-url,omitempty"`        // Pod 内访问 API server 的地址（本地开发用，覆盖集群内地址）
+	// JobTtlMinutes is the finished-Job retention window in minutes: how long a
+	// pipeline Job stays in Kubernetes after reaching a terminal state before
+	// the K8s TTL controller deletes it (which cascades to its Pods).
+	// Unset → DefaultJobTtlMinutes; a negative value disables the cleanup.
+	JobTtlMinutes *int `yaml:"job-ttl-minutes,omitempty"`
+}
+
+// DefaultJobTtlMinutes is the retention applied to finished pipeline Jobs when
+// kubernetes.job-ttl-minutes is not configured: 8 hours. It is deliberately much
+// larger than the reconciler's grace period, so a job that finished without ever
+// delivering a final runner report is reconciled — and its terminal status
+// written back — long before its K8s Job disappears. Once the K8s Job is gone it
+// is the only remaining source of truth for such rows, so deleting it too early
+// leaves them stuck as "running" forever.
+const DefaultJobTtlMinutes = 8 * 60
+
+// EffectiveJobTtlSeconds resolves the TTL stamped on every created pipeline Job,
+// in the seconds unit the K8s Job field requires. Returns nil (leaving the field
+// unset) when cleanup is disabled via a negative value.
+func (k KubernetesConfig) EffectiveJobTtlSeconds() *int32 {
+	// An explicit 0 also means "use the default" rather than "delete
+	// immediately", which is what K8s would do with a literal 0 TTL.
+	if k.JobTtlMinutes == nil || *k.JobTtlMinutes == 0 {
+		return int32Ptr(DefaultJobTtlMinutes * 60)
+	}
+	if *k.JobTtlMinutes < 0 {
+		return nil
+	}
+	seconds := *k.JobTtlMinutes * 60
+	if seconds > math.MaxInt32 {
+		// Clamp rather than silently overflowing into a negative TTL.
+		seconds = math.MaxInt32
+	}
+	return int32Ptr(seconds)
+}
+
+func int32Ptr(i int) *int32 {
+	v := int32(i)
+	return &v
 }
 
 // SnippetsConfig configures an optional GitLab-backed snippet store. When RepoUrl

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -112,6 +113,18 @@ func applyEnvOverrides(config *model.Config) {
 	envStr("NEUTRON_NOTIFY_APP_ID", func(v string) { config.Notify.AppId = v })
 	envTrue("NEUTRON_NOTIFY_SKIP_TLS_VERIFY", func() { config.Notify.SkipTLSVerify = true })
 	envStr("NEUTRON_POD_API_URL", func(v string) { config.Kubernetes.PodApiUrl = v })
+
+	// Finished-Job retention, in minutes. Negative values disable the cleanup;
+	// invalid input is ignored (falling back to the file value / default)
+	// rather than aborting startup.
+	envStr("NEUTRON_JOB_TTL_MINUTES", func(v string) {
+		minutes, err := strconv.Atoi(v)
+		if err != nil {
+			log.Printf("WARNING: ignoring invalid NEUTRON_JOB_TTL_MINUTES=%q", v)
+			return
+		}
+		config.Kubernetes.JobTtlMinutes = &minutes
+	})
 
 	envStr("NEUTRON_SNIPPETS_REPO_URL", func(v string) { config.Snippets.RepoUrl = v })
 	envStr("NEUTRON_SNIPPETS_PLATFORM", func(v string) { config.Snippets.Platform = v })

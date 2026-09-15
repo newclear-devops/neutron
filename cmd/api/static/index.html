@@ -1116,14 +1116,14 @@
                     return;
                 }
                 // Always use renderStatusLive since we now always have job and pods
-                renderStatusLive(data.job, data.pods, data.status, data.reportUrl, data.rerunnable, data.projectId);
+                renderStatusLive(data.job, data.pods, data.status, data.reportUrl, data.rerunnable, data.projectId, data.stuck);
             })
             .catch(function(err) {
                 app.innerHTML = '<p class="page-title">Error</p><p>' + escHtml(String(err)) + '</p>';
             });
     }
 
-    function renderStatusLive(job, podsData, dbStatus, reportUrl, rerunnable, projectId) {
+    function renderStatusLive(job, podsData, dbStatus, reportUrl, rerunnable, projectId, stuck) {
         var ann = job && job.metadata && job.metadata.annotations ? job.metadata.annotations : {};
         var st = job ? (job.status || {}) : {};
         var items = podsData && podsData.items ? podsData.items : [];
@@ -1171,6 +1171,7 @@
                     '<table><thead><tr><th>Pod</th><th>Status</th></tr></thead><tbody>' + podsHtml + '</tbody></table>'
                     : '<p style="color:#999;margin-top:12px">No pods found.</p>') +
                 (appConfig.logUrl ? '<p class="log-hint">Click pod name to view logs on external platform</p>' : '') +
+                (stuck ? '<p style="color:#b06000;margin-top:12px">The Kubernetes Job for this run has already been cleaned up, so no further status will arrive. Its outcome is unknown.</p>' : '') +
                 ((reportUrl || rerunnable) ?
                     '<div style="margin-top:16px;display:flex;gap:12px;align-items:center">' +
                         (reportUrl ? '<a target="_blank" href="' + escAttr(reportUrl) + '" class="btn btn-outline" style="padding:6px 16px;font-size:1.3rem">Test Report</a>' : '') +

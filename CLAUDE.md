@@ -34,7 +34,7 @@ go test ./...
 - `POST /api/trigger` — programmatic pipeline trigger by repo URL, job name, ref, and custom env vars (bypasses trigger type validation)
 - `GET /api/projects` — lists all registered projects
 - `GET /api/projects/:id/jobs` — lists jobs for a project (last 7 days)
-- `GET /api/status/:jobName` — job/pod status (JSON, from DB for completed jobs or K8s API for active jobs)
+- `GET /api/status/:jobName` — job/pod status (JSON). Served from the DB for completed jobs, otherwise from the K8s API. If the K8s Job no longer exists (TTL cleanup) the DB row is served instead, with `stuck: true` when the row never reached a terminal outcome — no more updates will ever arrive for it. Only when neither exists does it 400.
 - `POST /api/report/:jobName` — runners push status back to API server for persistence
 - `POST /api/report/:jobName/link` — set a test report URL for a job (`{"report_url": "..."}`)
 - `POST /api/jobs/:jobName/rerun` — rerun a webhook-created job by recreating an identical K8s Job from its persisted spec (same commit/params/trigger, reports to platform like the original). Only jobs with a stored spec are rerunnable.
@@ -86,7 +86,34 @@ Tables auto-migrated by GORM:
 
 ### Configuration
 
-Runtime config is `config.yaml` (gitignored). Shape defined by `internal/model/config.go`: host, port, database (MySQL DSN), salt, log_url (external log platform link template with {namespace} and {podName} placeholders, optional), codebase map (url/token/skip_tls_verify per platform: GitLab, Codeup), pod_codebase (pod-side codebase addresses, optional), kubernetes (kube-config path — optional for in-cluster, auto-detected via ServiceAccount; required for out-of-cluster, namespace, git-private-key secret, init-image, checkout-image, image-pull-secrets), notify (IM notification config: url, corp_id, app_id, skip_tls_verify). Most fields can be overridden via environment variables (NEUTRON_*).
+Runtime config is `config.yaml` (gitignored). Shape defined by `internal/model/config.go`: host, port, database (MySQL DSN), salt, log_url (external log platform link template with {namespace} and {podName} placeholders, optional), codebase map (url/token/skip_tls_verify per platform: GitLab, Codeup), pod_codebase (pod-side codebase addresses, optional), kubernetes (kube-config path — optional for in-cluster, auto-detected via ServiceAccount; required for out-of-cluster, namespace, git-private-key secret, init-image, checkout-image, image-pull-secrets, **job-ttl-minutes** — see **Job Cleanup (TTL)**, pod-api-url), notify (IM notification config: url, corp_id, app_id, skip_tls_verify). Most fields can be overridden via environment variables (NEUTRON_*).
+
+### Job Cleanup (TTL)
+
+Finished K8s Jobs and their Pods are reclaimed by Kubernetes itself: every pipeline Job is created with `TTLSecondsAfterFinished` set from `kubernetes.job-ttl-minutes` (`NEUTRON_JOB_TTL_MINUTES`). Without it completed Jobs accumulate forever — nothing in Neutron ever deletes them.
+
+The config unit is **minutes** (easier to reason about); `model.KubernetesConfig.EffectiveJobTtlSeconds` converts to the seconds the K8s field requires.
+
+| `job-ttl-minutes` | effect |
+|---|---|
+| unset or `0` | default **480** = 8h (`model.DefaultJobTtlMinutes`) |
+| positive N | delete the Job N minutes after it reaches a terminal state |
+| negative | disabled — no `TTLSecondsAfterFinished` field is set, nothing is auto-cleaned |
+
+Configuring less than `reconcileGracePeriod` (2 min) logs a startup warning: the K8s Job could vanish before the reconciler ever reads it.
+
+Deleting the Job cascades to its Pods via owner references. **DB rows are untouched** — history (`neutron_job` / `neutron_pod`) always lives in MySQL, and the status page serves completed jobs from there, so the UI is unaffected.
+
+**Why the default must stay well above the reconciler's grace period:** for a job whose runner never delivered its final report (checkout conflict, image pull failure, OOM), the K8s Job is the *only* source of truth for the outcome. `healStuckCompletedJobs` derives the terminal status from it; once it is deleted, that row can never converge and stays "running" forever (a documented limitation in `cmd/api/reconcile.go`). 8h leaves ample margin over the reconciler's 30s tick + 2min grace.
+
+**Cleaning up Jobs created before this setting existed:** the TTL applies only to Jobs created after the change. Backfill the existing ones by patching them — Kubernetes then deletes anything already past its TTL:
+
+```bash
+kubectl get jobs -o name | grep '^job\.batch/neutron-' | \
+  xargs -r -n1 -I{} kubectl patch {} --type=merge -p '{"spec":{"ttlSecondsAfterFinished":28800}}'
+```
+
+Before doing that, check whether any row within `ListUncompletedJobs`' 7-day window is still uncompleted (`completed = 0`) — those are precisely the rows that would lose their last source of truth. Let the reconciler close them out first (it does so within ~1h of the K8s Job going terminal), then patch.
 
 ### Notifications
 

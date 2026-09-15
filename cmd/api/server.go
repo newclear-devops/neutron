@@ -185,30 +185,7 @@ func (s *Server) handleStatus(c *gin.Context) {
 	// Check if job is completed in database - if yes, return from DB only
 	dbJob, dbErr := s.repo.GetJobByName(jobName)
 	if dbErr == nil && dbJob.Completed {
-		var status internal.JobStatus
-		_ = json.Unmarshal([]byte(dbJob.Status), &status)
-		// Convert pods to K8s-like format for frontend compatibility
-		var podItems []gin.H
-		for _, pod := range dbJob.Pods {
-			podItems = append(podItems, gin.H{
-				"metadata": gin.H{"name": pod.PodName, "uid": pod.PodUid},
-				"status":   gin.H{"phase": pod.Phase},
-			})
-		}
-		var reportUrl string
-		if url, err := s.repo.GetJobReportUrl(jobName); err == nil {
-			reportUrl = url
-		}
-		c.JSON(http.StatusOK, gin.H{
-			"jobName":    jobName,
-			"status":     status,
-			"job":        gin.H{"metadata": gin.H{"name": jobName}},
-			"pods":       gin.H{"items": podItems},
-			"source":     "database",
-			"reportUrl":  reportUrl,
-			"rerunnable": dbJob.Spec != "",
-			"projectId":  dbJob.ProjectId,
-		})
+		c.JSON(http.StatusOK, s.jobStatusFromDB(dbJob))
 		return
 	}
 
@@ -216,6 +193,17 @@ func (s *Server) handleStatus(c *gin.Context) {
 	jobClient := s.clientSet.BatchV1().Jobs(s.config.Kubernetes.Namespace)
 	job, err := jobClient.Get(context.Background(), jobName, metav1.GetOptions{})
 	if err != nil {
+		// The row exists but its K8s Job is gone — finished Jobs are deleted
+		// by the K8s TTL controller (kubernetes.job-ttl-seconds), and manual
+		// deletes work too. Serve what the DB has rather than erroring: it is
+		// the only record left. Note this is read-only — the row is NOT marked
+		// completed, so a later reconcile still gets a chance if the Job shows
+		// up again.
+		if dbErr == nil {
+			log.Printf("status %s: K8s Job not found (%v), serving last known status from DB", jobName, err)
+			c.JSON(http.StatusOK, s.jobStatusFromDB(dbJob))
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -317,6 +305,42 @@ func (s *Server) handleStatus(c *gin.Context) {
 		"rerunnable": dbErr == nil && dbJob.Spec != "",
 		"projectId":  projectId,
 	})
+}
+
+// jobStatusFromDB renders a status response entirely from a DB row, in the same
+// shape the K8s branch produces. Used for completed jobs (cheaper and
+// authoritative, since the K8s Job may already be TTL-cleaned) and as the
+// fallback when the K8s Job no longer exists.
+//
+// stuck=true tells the caller that the row is not completed and its K8s Job is
+// gone: with no terminal outcome recorded anywhere, nothing can move it forward
+// any more (see healStuckCompletedJobs in cmd/api/reconcile.go).
+func (s *Server) jobStatusFromDB(dbJob *internal.PipelineJob) gin.H {
+	var status internal.JobStatus
+	_ = json.Unmarshal([]byte(dbJob.Status), &status)
+	// Convert pods to K8s-like format for frontend compatibility
+	var podItems []gin.H
+	for _, pod := range dbJob.Pods {
+		podItems = append(podItems, gin.H{
+			"metadata": gin.H{"name": pod.PodName, "uid": pod.PodUid},
+			"status":   gin.H{"phase": pod.Phase},
+		})
+	}
+	var reportUrl string
+	if url, err := s.repo.GetJobReportUrl(dbJob.Name); err == nil {
+		reportUrl = url
+	}
+	return gin.H{
+		"jobName":    dbJob.Name,
+		"status":     status,
+		"job":        gin.H{"metadata": gin.H{"name": dbJob.Name}},
+		"pods":       gin.H{"items": podItems},
+		"source":     "database",
+		"reportUrl":  reportUrl,
+		"rerunnable": dbJob.Spec != "",
+		"projectId":  dbJob.ProjectId,
+		"stuck":      !dbJob.Completed,
+	}
 }
 
 // isFinalReport reports whether a status payload carries the job-level terminal
@@ -906,6 +930,7 @@ func (s *Server) buildLauncher(rc model.RunnerConfig, image string, resources *m
 		s.config.Kubernetes.ImagePullSecrets,
 		platform,
 		s.config.Kubernetes.PodApiUrl,
+		s.config.Kubernetes.EffectiveJobTtlSeconds(),
 		resources,
 		extraEnv...,
 	)

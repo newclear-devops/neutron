@@ -73,8 +73,11 @@ codebase:
 kubernetes:
   kube-config: "/path/to/.kube/config"  # optional when deploying in-cluster (auto-detected via ServiceAccount)
   namespace: "default"
-  git-private-key: "git-ssh-secret"     # K8s secret name containing SSH key for git clone
-  init-image: "neutron-runner:latest"   # runner image, init container copies runner binary from it
+  # Optional: how long (minutes) finished pipeline Jobs are kept before
+  # Kubernetes deletes them (cascading to their Pods). Default 480 (8 hours).
+  # Job history itself lives in MySQL and is never deleted.
+  # Set a negative value to disable cleanup entirely.
+  job-ttl-minutes: 480
 ```
 
 ### 3. Initialize database

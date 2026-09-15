@@ -24,11 +24,12 @@ type Launcher struct {
 	ImagePullSecrets []string
 	Platform         string
 	PodApiUrl        string           // override NEUTRON_API_URL for pods (local dev)
+	JobTtlSeconds    *int32           // finished-Job retention handed to K8s as TTLSecondsAfterFinished; nil = never auto-cleanup
 	ExtraEnv         []v1.EnvVar      // platform-specific env vars (e.g. TARGET_BRANCH for GitLab MR)
 	Resources        *model.Resources // job-level resource requirements
 }
 
-func NewLauncher(namespace string, runnerConfig model.RunnerConfig, initImage string, checkoutImage string, baseImage string, keyName string, imagePullSecrets []string, platform string, podApiUrl string, resources *model.Resources, extraEnv ...v1.EnvVar) *Launcher {
+func NewLauncher(namespace string, runnerConfig model.RunnerConfig, initImage string, checkoutImage string, baseImage string, keyName string, imagePullSecrets []string, platform string, podApiUrl string, jobTtlSeconds *int32, resources *model.Resources, extraEnv ...v1.EnvVar) *Launcher {
 	return &Launcher{
 		Namespace:        namespace,
 		RunnerConfig:     runnerConfig,
@@ -39,6 +40,7 @@ func NewLauncher(namespace string, runnerConfig model.RunnerConfig, initImage st
 		ImagePullSecrets: imagePullSecrets,
 		Platform:         platform,
 		PodApiUrl:        podApiUrl,
+		JobTtlSeconds:    jobTtlSeconds,
 		ExtraEnv:         extraEnv,
 		Resources:        resources,
 	}
@@ -104,7 +106,14 @@ func (l *Launcher) CreateJob(neutronHost string) *batchv1.Job {
 			},
 		},
 		Spec: batchv1.JobSpec{
+			// No retries: re-running would repeat side-effecting steps
+			// (deploys), and the runner already reported the failure.
 			BackoffLimit: int32Ptr(0),
+			// K8s deletes the Job this long after it reaches a terminal state,
+			// cascading to its Pods. Without it finished Jobs accumulate
+			// forever. See model.KubernetesConfig.EffectiveJobTtlSeconds for
+			// why this must comfortably exceed the reconciler's grace period.
+			TTLSecondsAfterFinished: l.JobTtlSeconds,
 			Template: v1.PodTemplateSpec{
 				Spec: v1.PodSpec{
 					Containers: []v1.Container{
