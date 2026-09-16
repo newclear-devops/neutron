@@ -56,6 +56,7 @@ func (s *Server) registerRoutes(r *gin.Engine) {
 	r.GET("/api/config", s.handleConfig)
 	r.GET("/api/projects", s.handleListProjects)
 	r.GET("/api/projects/:id/jobs", s.handleListProjectJobs)
+	r.GET("/api/projects/:id/job-names", s.handleListProjectJobNames)
 	r.GET("/api/jobs/recent", s.handleRecentJobs)
 	r.GET("/api/jobs/:jobName/running-siblings", s.handleRunningSiblings)
 	r.POST("/api/register", s.handleRegister)
@@ -89,23 +90,63 @@ func (s *Server) handleListProjects(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"projects": projects})
 }
 
+// parsePageParams reads the page/page_size query params, clamping them so a
+// caller cannot defeat pagination by asking for a single enormous page.
+func parsePageParams(c *gin.Context) (page, pageSize int) {
+	page, pageSize = 1, internal.DefaultPageSize
+	if v, err := strconv.Atoi(c.Query("page")); err == nil && v > 0 {
+		page = v
+	}
+	if v, err := strconv.Atoi(c.Query("page_size")); err == nil && v > 0 {
+		pageSize = v
+	}
+	if pageSize > internal.MaxPageSize {
+		pageSize = internal.MaxPageSize
+	}
+	return page, pageSize
+}
+
 func (s *Server) handleListProjectJobs(c *gin.Context) {
 	id := c.Param("id")
-	jobs, err := s.repo.ListProjectJobs(id, 7)
+	page, pageSize := parsePageParams(c)
+	jobs, total, err := s.repo.ListProjectJobsPaged(id, c.Query("job_name"), 7, pageSize, page)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"jobs": jobs})
+	c.JSON(http.StatusOK, gin.H{
+		"jobs":      jobs,
+		"total":     total,
+		"page":      page,
+		"page_size": pageSize,
+	})
+}
+
+// handleListProjectJobNames feeds the job-name filter on the project page. It is
+// a separate endpoint because the dropdown used to be built client-side from
+// every row — impossible once the list is paginated.
+func (s *Server) handleListProjectJobNames(c *gin.Context) {
+	names, err := s.repo.ListProjectJobNames(c.Param("id"), 7)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"job_names": names})
 }
 
 func (s *Server) handleRecentJobs(c *gin.Context) {
-	jobs, err := s.repo.ListAllRecentJobs(7)
+	page, pageSize := parsePageParams(c)
+	jobs, total, err := s.repo.ListRecentJobsPaged(c.Query("q"), 7, pageSize, page)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"jobs": jobs})
+	c.JSON(http.StatusOK, gin.H{
+		"jobs":      jobs,
+		"total":     total,
+		"page":      page,
+		"page_size": pageSize,
+	})
 }
 
 // handleRunningSiblings reports whether other, still-running jobs exist in the
@@ -292,8 +333,12 @@ func (s *Server) handleStatus(c *gin.Context) {
 		reportUrl = url
 	}
 	var projectId string
+	var jobKey string
+	var params *model.JobParams
 	if dbErr == nil {
 		projectId = dbJob.ProjectId
+		jobKey = dbJob.JobName
+		params = parseParams(dbJob.Params)
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"jobName":    jobName,
@@ -304,6 +349,8 @@ func (s *Server) handleStatus(c *gin.Context) {
 		"reportUrl":  reportUrl,
 		"rerunnable": dbErr == nil && dbJob.Spec != "",
 		"projectId":  projectId,
+		"jobKey":     jobKey,
+		"params":     params,
 	})
 }
 
@@ -340,6 +387,10 @@ func (s *Server) jobStatusFromDB(dbJob *internal.PipelineJob) gin.H {
 		"rerunnable": dbJob.Spec != "",
 		"projectId":  dbJob.ProjectId,
 		"stuck":      !dbJob.Completed,
+		// Trigger context (ref/env) for the detail box. Empty on rows created
+		// before the column existed.
+		"jobKey": dbJob.JobName,
+		"params": parseParams(dbJob.Params),
 	}
 }
 
@@ -769,10 +820,28 @@ func (s *Server) createJobFromSpec(projectId string, spec model.JobSpec, notify 
 		Status:    "",
 		Notify:    marshalNotify(notify),
 		Spec:      marshalSpec(spec),
+		JobName:   spec.JobName,
+		Params:    marshalParams(paramsFromSpec(spec)),
 	}); err != nil {
 		return "", err
 	}
 	return createdJob.Name, nil
+}
+
+// paramsFromSpec rebuilds the trigger context shown on the status page from the
+// same snapshot the rerun path uses, so both read one source of truth.
+func paramsFromSpec(spec model.JobSpec) model.JobParams {
+	ref := spec.CodeRef
+	if ref == "" {
+		ref = spec.CommitSha
+	}
+	return model.JobParams{
+		Ref:       ref,
+		CommitSha: spec.CommitSha,
+		Trigger:   spec.Trigger,
+		SourceUrl: spec.SourceUrl,
+		Env:       spec.QueryParams,
+	}
 }
 
 func (s *Server) handleTrigger(c *gin.Context) {
@@ -900,6 +969,16 @@ func (s *Server) handleTrigger(c *gin.Context) {
 		Name:      createdJob.Name,
 		Status:    "",
 		Notify:    marshalNotify(job.Notify),
+		// No Spec: API-triggered jobs are not rerunnable (they bypass the
+		// trigger/platform-report behaviour a rerun would have to reproduce).
+		// Params is what makes the ref and env visible on the status page.
+		JobName: req.JobName,
+		Params: marshalParams(model.JobParams{
+			Ref:       req.Ref,
+			CommitSha: req.Ref,
+			Trigger:   "API",
+			Env:       req.Env,
+		}),
 	}); err != nil {
 		log.Printf("failed to save job to database: %v", err)
 	}
@@ -977,6 +1056,29 @@ func parseNotify(s string) *model.Notify {
 		return nil
 	}
 	return &n
+}
+
+// marshalParams serializes a job's trigger context to JSON for persistence on
+// neutron_job. A zero-value config yields an empty string.
+func marshalParams(p model.JobParams) string {
+	b, err := json.Marshal(p)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// parseParams deserializes the trigger context persisted on neutron_job. An
+// empty or invalid value yields nil (the status page then shows nothing).
+func parseParams(s string) *model.JobParams {
+	if s == "" {
+		return nil
+	}
+	var p model.JobParams
+	if err := json.Unmarshal([]byte(s), &p); err != nil {
+		return nil
+	}
+	return &p
 }
 
 // marshalSpec serializes a job's rerun spec to JSON for persistence on

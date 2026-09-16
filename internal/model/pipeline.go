@@ -54,6 +54,21 @@ type JobSpec struct {
 	QueryParams  map[string]string `json:"query_params,omitempty"` // webhook URL query params → pod env
 }
 
+// JobParams is the trigger context of a run: which ref it ran against and which
+// env vars were injected into the pod. Persisted as JSON on neutron_job.params so
+// the status page can still show it long after the K8s Job — which carries the
+// same values as container env — has been TTL-deleted.
+//
+// It is deliberately kept separate from JobSpec: a spec makes a job rerunnable,
+// and API-triggered jobs are not.
+type JobParams struct {
+	Ref       string            `json:"ref,omitempty"`        // branch/tag name as written by the trigger, or the ref passed to /api/trigger
+	CommitSha string            `json:"commit_sha,omitempty"` // commit the checkout is pinned to
+	Trigger   string            `json:"trigger,omitempty"`    // PUSH / MR / TAG / API
+	SourceUrl string            `json:"source_url,omitempty"` // link to the branch, tag or MR on the code platform
+	Env       map[string]string `json:"env,omitempty"`        // injected env vars (webhook query params, or /api/trigger "env")
+}
+
 type Step struct {
 	StepName string `yaml:"name"`
 	Command  string `yaml:"cmd"`

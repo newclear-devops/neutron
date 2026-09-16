@@ -330,10 +330,39 @@
     }
 
     // --- Recent Jobs ---
+    // Paging and searching both happen in the API now. The window can hold
+    // thousands of rows, so fetching all of them just to slice them in the
+    // browser cost the same DB work as showing them all.
     var RECENT_PAGE_SIZE = 20;
-    var _recentJobs = [];
-    var _recentFiltered = [];
-    var _recentPage = 0;
+    var _recentJobs = [];      // current page only
+    var _recentPage = 0;       // 0-based
+    var _recentTotal = 0;      // rows in the whole window, for the page count
+    var _recentQuery = '';
+    var _recentSearchTimer = null;
+
+    function loadRecentJobs() {
+        var url = '/api/jobs/recent?page=' + (_recentPage + 1) + '&page_size=' + RECENT_PAGE_SIZE +
+            (_recentQuery ? '&q=' + encodeURIComponent(_recentQuery) : '');
+        return fetch(url)
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                var listEl = document.getElementById('recentJobsList');
+                if (!listEl) return; // navigated away while loading
+                if (data.error) {
+                    listEl.innerHTML = '<p style="color:#c00">' + escHtml(data.error) + '</p>';
+                    var pagEl = document.getElementById('recentPagination');
+                    if (pagEl) pagEl.innerHTML = '';
+                    return;
+                }
+                _recentJobs = data.jobs || [];
+                _recentTotal = data.total || 0;
+                renderRecentJobsPage();
+            })
+            .catch(function(err) {
+                var el = document.getElementById('recentJobsList');
+                if (el) el.innerHTML = '<p style="color:#c00">Failed to load: ' + escHtml(String(err)) + '</p>';
+            });
+    }
 
     function renderRecentJobs() {
         app.innerHTML =
@@ -344,55 +373,36 @@
             '<div id="recentJobsList"><p style="color:#999">Loading...</p></div>' +
             '<div id="recentPagination" style="text-align:center;margin-top:24px"></div>';
 
-        fetch('/api/jobs/recent')
-            .then(function(r) { return r.json(); })
-            .then(function(data) {
-                if (data.error) {
-                    document.getElementById('recentJobsList').innerHTML = '<p style="color:#c00">' + escHtml(data.error) + '</p>';
-                    return;
-                }
-                _recentJobs = data.jobs || [];
-                _recentFiltered = _recentJobs;
-                _recentPage = 0;
-                renderRecentJobsPage();
+        _recentJobs = [];
+        _recentTotal = 0;
+        _recentPage = 0;
+        _recentQuery = '';
 
-                document.getElementById('recentSearchInput').addEventListener('input', function() {
-                    var q = this.value.toLowerCase();
-                    if (!q) {
-                        _recentFiltered = _recentJobs;
-                    } else {
-                        _recentFiltered = _recentJobs.filter(function(job) {
-                            var st = parseJobStatus(job.Status);
-                            var repoName = getRepoName(st.repo_url) || '';
-                            var statusText = '';
-                            if (st.succeeded > 0) statusText = 'success succeeded';
-                            else if (st.failed > 0) statusText = 'fail failed';
-                            else if (st.active > 0) statusText = 'running active';
-                            else statusText = 'pending';
-                            var searchable = [repoName, job.Name || '', st.trigger_type || '', statusText, st.webhook_type || ''].join(' ').toLowerCase();
-                            return searchable.indexOf(q) >= 0;
-                        });
-                    }
-                    _recentPage = 0;
-                    renderRecentJobsPage();
-                });
-            })
-            .catch(function(err) {
-                document.getElementById('recentJobsList').innerHTML = '<p style="color:#c00">Failed to load: ' + escHtml(String(err)) + '</p>';
-            });
+        // Debounced: every keystroke would otherwise be a round trip.
+        document.getElementById('recentSearchInput').addEventListener('input', function() {
+            var value = this.value;
+            clearTimeout(_recentSearchTimer);
+            _recentSearchTimer = setTimeout(function() {
+                _recentQuery = value.trim();
+                _recentPage = 0;
+                loadRecentJobs();
+            }, 300);
+        });
+
+        loadRecentJobs();
     }
 
     function renderRecentJobsPage() {
-        var totalPages = Math.ceil(_recentFiltered.length / RECENT_PAGE_SIZE);
-        if (totalPages === 0) {
+        var totalPages = Math.ceil(_recentTotal / RECENT_PAGE_SIZE);
+        if (_recentJobs.length === 0) {
             document.getElementById('recentJobsList').innerHTML = '<p style="color:#999">No jobs found.</p>';
             document.getElementById('recentPagination').innerHTML = '';
             return;
         }
 
         var start = _recentPage * RECENT_PAGE_SIZE;
-        var end = Math.min(start + RECENT_PAGE_SIZE, _recentFiltered.length);
-        var pageJobs = _recentFiltered.slice(start, end);
+        var end = start + _recentJobs.length;
+        var pageJobs = _recentJobs;
 
         var html = '<table><thead><tr><th>Status</th><th>Project</th><th>Job Name</th><th>Pod</th><th>Time</th><th></th></tr></thead><tbody>';
         for (var i = 0; i < pageJobs.length; i++) {
@@ -426,7 +436,7 @@
         document.getElementById('recentJobsList').innerHTML = html;
 
         // Pagination controls
-        var paginationHtml = '<div style="font-size:1.3rem;color:#999;margin-bottom:8px">Showing ' + (start + 1) + '-' + end + ' of ' + _recentFiltered.length + ' jobs</div>';
+        var paginationHtml = '<div style="font-size:1.3rem;color:#999;margin-bottom:8px">Showing ' + (start + 1) + '-' + end + ' of ' + _recentTotal + ' jobs</div>';
         if (totalPages > 1) {
             paginationHtml += '<div style="display:flex;justify-content:center;align-items:center;gap:12px">';
             paginationHtml += '<button class="btn btn-outline" style="padding:6px 16px;font-size:1.3rem"' +
@@ -442,11 +452,11 @@
     }
 
     function recentJobsPrevPage() {
-        if (_recentPage > 0) { _recentPage--; renderRecentJobsPage(); }
+        if (_recentPage > 0) { _recentPage--; loadRecentJobs(); }
     }
     function recentJobsNextPage() {
-        var totalPages = Math.ceil(_recentFiltered.length / RECENT_PAGE_SIZE);
-        if (_recentPage < totalPages - 1) { _recentPage++; renderRecentJobsPage(); }
+        var totalPages = Math.ceil(_recentTotal / RECENT_PAGE_SIZE);
+        if (_recentPage < totalPages - 1) { _recentPage++; loadRecentJobs(); }
     }
     window.recentJobsPrevPage = recentJobsPrevPage;
     window.recentJobsNextPage = recentJobsNextPage;
@@ -701,6 +711,7 @@
     }
 
     function renderProjectJobs(projectId) {
+        _projectState = { id: projectId, page: 0, jobName: '', total: 0, jobs: [] };
         app.innerHTML =
             '<p class="page-title">Pipeline history</p>' +
             '<div style="margin-bottom:16px;display:flex;gap:12px;align-items:center">' +
@@ -708,11 +719,14 @@
                 '<select id="jobNameFilter" style="max-width:200px;padding:6px 12px;font-size:1.3rem;border:1px solid #d1d5db;border-radius:4px;color:#606c76"><option value="">All jobs</option></select>' +
             '</div>' +
             '<div id="projectInfo"></div>' +
-            '<div id="jobsList"><p style="color:#999">Loading...</p></div>';
+            '<div id="jobsList"><p style="color:#999">Loading...</p></div>' +
+            '<div id="projectPagination" style="text-align:center;margin-top:24px"></div>';
 
         Promise.all([
             fetch('/api/projects').then(function(r) { return r.json(); }),
-            fetch('/api/projects/' + encodeURIComponent(projectId) + '/jobs').then(function(r) { return r.json(); })
+            // Filter options come from the server: the list is paginated, so
+            // there is no longer a full set of rows to derive them from.
+            fetch('/api/projects/' + encodeURIComponent(projectId) + '/job-names').then(function(r) { return r.json(); })
         ]).then(function(results) {
             var projects = results[0].projects || [];
             var project = null;
@@ -739,52 +753,77 @@
                         '</div>';
             }
 
-            var slug = project ? projectSlug(project.RepoUrl) : '';
-
-            // Display jobs
-            var jobsData = results[1];
-            if (jobsData.error) {
-                document.getElementById('jobsList').innerHTML = '<p style="color:#c00">' + escHtml(jobsData.error) + '</p>';
-                return;
-            }
-            var allJobs = jobsData.jobs || [];
-
-            // Populate job name filter dropdown
-            var seen = {};
+            var namesData = results[1];
             var filterSelect = document.getElementById('jobNameFilter');
-            for (var i = 0; i < allJobs.length; i++) {
-                var ln = getJobLogicalName(allJobs[i].Name, slug);
-                if (!seen[ln]) {
-                    seen[ln] = true;
-                    var opt = document.createElement('option');
-                    opt.value = ln;
-                    opt.textContent = ln;
-                    filterSelect.appendChild(opt);
-                }
+            var names = (namesData && namesData.job_names) || [];
+            for (var n = 0; n < names.length; n++) {
+                var opt = document.createElement('option');
+                opt.value = names[n];
+                opt.textContent = names[n];
+                filterSelect.appendChild(opt);
             }
-
             filterSelect.addEventListener('change', function() {
-                var selected = this.value;
-                var filtered = selected ? allJobs.filter(function(j) { return getJobLogicalName(j.Name, slug) === selected; }) : allJobs;
-                renderProjectJobsList(filtered);
+                _projectState.jobName = this.value;
+                _projectState.page = 0;
+                loadProjectJobs();
             });
 
-            renderProjectJobsList(allJobs);
+            loadProjectJobs();
         }).catch(function(err) {
             document.getElementById('jobsList').innerHTML = '<p style="color:#c00">Failed to load: ' + escHtml(String(err)) + '</p>';
         });
     }
 
-    function renderProjectJobsList(jobs) {
+    // --- Project jobs: server-side paging ---
+    var PROJECT_PAGE_SIZE = 20;
+    var _projectState = { id: '', page: 0, jobName: '', total: 0, jobs: [] };
+
+    function loadProjectJobs() {
+        var s = _projectState;
+        var url = '/api/projects/' + encodeURIComponent(s.id) + '/jobs?page=' + (s.page + 1) +
+            '&page_size=' + PROJECT_PAGE_SIZE +
+            (s.jobName ? '&job_name=' + encodeURIComponent(s.jobName) : '');
+        return fetch(url)
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                var el = document.getElementById('jobsList');
+                if (!el) return; // navigated away while loading
+                if (data.error) {
+                    el.innerHTML = '<p style="color:#c00">' + escHtml(data.error) + '</p>';
+                    return;
+                }
+                s.jobs = data.jobs || [];
+                s.total = data.total || 0;
+                renderProjectJobsList();
+            })
+            .catch(function(err) {
+                var el = document.getElementById('jobsList');
+                if (el) el.innerHTML = '<p style="color:#c00">Failed to load: ' + escHtml(String(err)) + '</p>';
+            });
+    }
+
+    function projectJobsGoToPage(delta) {
+        var totalPages = Math.ceil(_projectState.total / PROJECT_PAGE_SIZE);
+        var next = _projectState.page + delta;
+        if (next < 0 || (totalPages > 0 && next >= totalPages)) return;
+        _projectState.page = next;
+        loadProjectJobs();
+    }
+    window.projectJobsGoToPage = projectJobsGoToPage;
+
+    function renderProjectJobsList() {
+        var s = _projectState;
         var el = document.getElementById('jobsList');
-        if (!jobs || jobs.length === 0) {
+        var pagEl = document.getElementById('projectPagination');
+        if (!s.jobs || s.jobs.length === 0) {
             el.innerHTML = '<p style="color:#999">No pipeline runs in the last 7 days.</p>';
+            if (pagEl) pagEl.innerHTML = '';
             return;
         }
 
         var html = '<table><thead><tr><th>Job Name</th><th>Status</th><th>Trigger</th><th>Duration</th><th></th></tr></thead><tbody>';
-        for (var i = 0; i < jobs.length; i++) {
-            var job = jobs[i];
+        for (var i = 0; i < s.jobs.length; i++) {
+            var job = s.jobs[i];
             var status = {};
             try { status = JSON.parse(job.Status || '{}'); } catch(e) {}
             var statusHtml = '';
@@ -816,10 +855,31 @@
                     durationHtml = '<span style="color:#2563eb">' + durationHtml + '</span>';
                 }
             }
-            html += '<tr><td><a href="#/status/' + escAttr(job.Name) + '">' + escHtml(job.Name) + '</a></td><td>' + statusHtml + '</td><td>' + escHtml(status.trigger_type || '-') + '</td><td style="font-size:1.3rem;color:#606c76">' + durationHtml + '</td><td><a href="#/status/' + escAttr(job.Name) + '" class="btn btn-outline" style="padding:4px 12px;font-size:1.2rem">Detail</a></td></tr>';
+            // Prefer the stored job key; rows created before the job_name
+            // column existed fall back to parsing the generated name.
+            var label = job.JobName || getJobLogicalName(job.Name);
+            html += '<tr><td><a href="#/status/' + escAttr(job.Name) + '" title="' + escAttr(job.Name) + '">' + escHtml(label) + '</a></td><td>' + statusHtml + '</td><td>' + escHtml(status.trigger_type || '-') + '</td><td style="font-size:1.3rem;color:#606c76">' + durationHtml + '</td><td><a href="#/status/' + escAttr(job.Name) + '" class="btn btn-outline" style="padding:4px 12px;font-size:1.2rem">Detail</a></td></tr>';
         }
         html += '</tbody></table>';
         el.innerHTML = html;
+
+        var totalPages = Math.ceil(s.total / PROJECT_PAGE_SIZE);
+        var start = s.page * PROJECT_PAGE_SIZE;
+        var end = start + s.jobs.length;
+        var pagHtml = '<div style="font-size:1.3rem;color:#999;margin-bottom:8px">Showing ' +
+            (start + 1) + '-' + end + ' of ' + s.total + ' runs</div>';
+        if (totalPages > 1) {
+            pagHtml += '<div style="display:flex;justify-content:center;align-items:center;gap:12px">' +
+                '<button class="btn btn-outline" style="padding:6px 16px;font-size:1.3rem"' +
+                    (s.page === 0 ? ' disabled' : '') +
+                    ' onclick="projectJobsGoToPage(-1)">← Prev</button>' +
+                '<span style="font-size:1.3rem;color:#606c76">Page ' + (s.page + 1) + ' of ' + totalPages + '</span>' +
+                '<button class="btn btn-outline" style="padding:6px 16px;font-size:1.3rem"' +
+                    (s.page >= totalPages - 1 ? ' disabled' : '') +
+                    ' onclick="projectJobsGoToPage(1)">Next →</button>' +
+                '</div>';
+        }
+        if (pagEl) pagEl.innerHTML = pagHtml;
     }
 
     // --- Home ---
@@ -1142,14 +1202,57 @@
                     return;
                 }
                 // Always use renderStatusLive since we now always have job and pods
-                renderStatusLive(data.job, data.pods, data.status, data.reportUrl, data.rerunnable, data.projectId, data.stuck);
+                renderStatusLive(data.job, data.pods, data.status, data.reportUrl, data.rerunnable,
+                    data.projectId, data.stuck, data.jobKey, data.params);
             })
             .catch(function(err) {
                 app.innerHTML = '<p class="page-title">Error</p><p>' + escHtml(String(err)) + '</p>';
             });
     }
 
-    function renderStatusLive(job, podsData, dbStatus, reportUrl, rerunnable, projectId, stuck) {
+    // Trigger context of a run: which ref it was triggered against and which env
+    // vars were injected into the pod (webhook query params, or the "env" of
+    // /api/trigger). Values are shown verbatim — this page has no access control,
+    // so anything passed through env is visible to everyone who can open it.
+    function renderTriggerDetails(jobKey, params) {
+        var rows = '';
+        function row(label, value) {
+            rows += '<tr><td style="padding:3px 16px 3px 0;color:#606c76;white-space:nowrap">' + escHtml(label) +
+                '</td><td style="padding:3px 0">' + escHtml(value) + '</td></tr>';
+        }
+        if (jobKey) row('Job', jobKey);
+        if (params) {
+            if (params.ref) row('Ref', params.ref);
+            if (params.commit_sha) row('Commit', params.commit_sha);
+            if (params.trigger) row('Trigger', params.trigger);
+        }
+        if (!rows) return '';
+
+        var env = (params && params.env) || {};
+        var envKeys = Object.keys(env).sort();
+        var envHtml = '';
+        if (envKeys.length) {
+            for (var i = 0; i < envKeys.length; i++) {
+                envHtml += '<tr><td style="padding:3px 16px 3px 0;color:#606c76;font-family:monospace">' +
+                    escHtml(envKeys[i]) +
+                    '</td><td style="padding:3px 0;font-family:monospace;word-break:break-all">' +
+                    escHtml(env[envKeys[i]]) + '</td></tr>';
+            }
+        } else if (params) {
+            envHtml = '<tr><td colspan="2" style="padding:3px 0;color:#999">No environment variables injected.</td></tr>';
+        }
+
+        return '<div class="card" style="margin-top:16px">' +
+            '<p style="font-size:1.4rem;font-weight:600;color:#2d3748;margin-bottom:8px">Trigger details</p>' +
+            '<table style="font-size:1.3rem"><tbody>' + rows + '</tbody></table>' +
+            (envHtml ?
+                '<p style="font-size:1.3rem;font-weight:600;color:#606c76;margin:14px 0 4px">Environment</p>' +
+                '<table style="font-size:1.3rem"><tbody>' + envHtml + '</tbody></table>'
+                : '') +
+            '</div>';
+    }
+
+    function renderStatusLive(job, podsData, dbStatus, reportUrl, rerunnable, projectId, stuck, jobKey, params) {
         var ann = job && job.metadata && job.metadata.annotations ? job.metadata.annotations : {};
         var st = job ? (job.status || {}) : {};
         var items = podsData && podsData.items ? podsData.items : [];
@@ -1204,7 +1307,8 @@
                         (rerunnable ? '<button class="btn btn-outline" style="padding:6px 16px;font-size:1.3rem" onclick="rerunJob(\'' + escAttr(jobName) + '\')">Rerun</button>' : '') +
                     '</div>'
                     : '') +
-            '</div>';
+            '</div>' +
+            renderTriggerDetails(jobKey, params);
     }
 
     function rerunJob(jobName) {
