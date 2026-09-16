@@ -64,7 +64,7 @@ go test ./...
 - `internal/gitlab/` — GitLab webhook parsing (`parser.go`)
 - `internal/codeup/` — Codeup webhook parsing (`parser.go`)
 - `internal/parser/` — shared parsing logic: `base.go` (fetch neutron.yaml), `path.go` (repo URL → API path conversion for GitLab `%2F` and Codeup `%252F`)
-- `internal/launcher/` — shared K8s Job creation (platform-agnostic). Job names are `neutron-<project>-<job>-<YYYYMMDD-HHMMSS>-<4-char hex>` (see **Job Naming** below).
+- `internal/launcher/` — shared K8s Job creation (platform-agnostic). Job names are `neutron-<project>-<job>-<YYMMDDHHMMSS>-<4-char hex>` (see **Job Naming** below).
 - `internal/model/` — domain models: `Config`, `Pipeline`, `Job`, `Step`, `RunnerConfig` + interfaces: `Reporter`, `PipelineParser`
 - `internal/service/` — `Runner` (step execution, supports `SkipTriggerCheck`)
 - `internal/repo.go` — MySQL data access (Repository pattern)
@@ -148,18 +148,20 @@ The K8s Job name is `neutron-<project>-<job>-<timestamp>-<suffix>` (`internal/la
 |---|---|---|
 | `<project>` | repo name extracted from the repo URL (`parser.ExtractRepoName`) | letters/digits only, lowercased, ≤20 chars; **omitted** when nothing usable can be extracted |
 | `<job>` | pipeline job key from `neutron.yaml` | lowercased, ≤20 chars; dashes are preserved |
-| `<timestamp>` | `YYYYMMDD-HHMMSS` | second granularity |
+| `<timestamp>` | `YYMMDDHHMMSS` | second granularity; the 3 chars saved versus `YYYYMMDD-HHMMSS` go to the segments above |
 | `<suffix>` | 4-char lowercase hex | random |
 
 Projects sharing a default pipeline launch identically named jobs, so without `<project>` their pods are indistinguishable in `kubectl get pods`. The random suffix guarantees that two triggers of the same job within the same second no longer collide (previously the timestamp alone produced `AlreadyExists` on the second trigger).
 
 Both added segments sit *before* / *after* carefully chosen positions: `<timestamp>-<suffix>` must stay at the very end, because consumers locate it from the tail:
 
-- DB recency filters extract the timestamp via `jobTimestampExpr()` (`internal/repo.go`), which handles the formats with and without the random suffix via a `CASE WHEN` branch. It counts characters **from the end**, so adding segments at the front is safe and existing rows keep aging out.
-- The SPA parses the trailing timestamp for log-expiry/duration with a regex.
+- DB recency filters extract the timestamp via `jobTimestampExpr()` (`internal/repo.go`), which counts characters **from the end** and branches on the tail shape. Three layouts have shipped — with the compact timestamp, with the old `YYYYMMDD-HHMMSS` timestamp, and without a random suffix — and all three are normalized back to `YYYYMMDD-HHMMSS` so they compare correctly against `cutoffDays()`. Adding segments at the front is therefore safe and existing rows keep aging out.
+- The SPA parses the trailing timestamp for log-expiry/duration via `parseNameTimestamp`, which accepts both timestamp layouts.
 - `getJobLogicalName` strips `neutron-<project>-` before stripping the tail; it takes the project slug (mirroring the server's sanitizing rule — see `projectSlug` in the SPA) so a `<job>` key containing dashes is not mistaken for the project segment. Rows predating the project segment fall back to the old behaviour.
 
-The whole name is capped at **63 chars** (`jobNameMaxLength`), the K8s label value limit, so the `job-name` label derived from it stays complete. Fixed parts (`neutron` + 4 separators + timestamp + suffix) take 30 of them, leaving 33 for project+job; when they do not both fit, the project is trimmed and the job key stays whole.
+The whole name is capped at **63 chars** (`jobNameMaxLength`), the K8s label value limit, so the `job-name` label derived from it stays complete. Fixed parts (`neutron` + 4 separators + 12-char timestamp + suffix) take 27 of them, leaving 36 for project+job — each segment is capped at 20, and when they do not both fit the project is trimmed and the job key stays whole.
+
+Because the timestamp omits the century, every reader of the name prefixes `20` when reconstructing a date (`jobTimestampExpr`, `parseNameTimestamp`). That assumption breaks in 2100.
 
 The runner is told its full name via the `FULL_JOB_NAME` env var and reports to `/api/report/<FULL_JOB_NAME>`; the logical `JOB_NAME` (from `neutron.yaml`) is only used to select steps, never to key DB/K8s lookups.
 

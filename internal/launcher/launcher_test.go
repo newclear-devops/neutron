@@ -44,12 +44,12 @@ func ttlPtr(i int32) *int32 { return &i }
 
 // jobNamePattern describes the generated name: an optional project segment, the
 // job key, then the fixed trailing -<YYYYMMDD-HHMMSS>-<4-hex>.
-var jobNamePattern = regexp.MustCompile(`^neutron-(?:[a-z0-9]{1,20}-)[a-z0-9][a-z0-9-]*-\d{8}-\d{6}-[0-9a-f]{4}$`)
+var jobNamePattern = regexp.MustCompile(`^neutron-(?:[a-z0-9]{1,20}-)[a-z0-9][a-z0-9-]*-\d{12}-[0-9a-f]{4}$`)
 
 func TestBuildJobNameIncludesProject(t *testing.T) {
-	name := buildJobName("order-service", "build", "20260916-120000")
+	name := buildJobName("order-service", "build", "260916120000")
 	// The repo-derived segment is squeezed of every non-alphanumeric character.
-	if !strings.HasPrefix(name, "neutron-orderservice-build-20260916-120000-") {
+	if !strings.HasPrefix(name, "neutron-orderservice-build-260916120000-") {
 		t.Errorf("name = %q, want neutron-orderservice-build-<ts>-<rand>", name)
 	}
 }
@@ -60,14 +60,14 @@ func TestBuildJobNameProjectKeepsOnlyAlnum(t *testing.T) {
 	if got := projectNamePart("My_Repo.Service", maxNamePartLength); got != "myreposervice" {
 		t.Errorf("projectNamePart = %q, want %q", got, "myreposervice")
 	}
-	name := buildJobName("My_Repo.Service", "build", "20260916-120000")
+	name := buildJobName("My_Repo.Service", "build", "260916120000")
 	if !strings.HasPrefix(name, "neutron-myreposervice-build-") {
 		t.Errorf("name = %q, want the sanitized project segment", name)
 	}
 }
 
 func TestBuildJobNamePreservesJobKeyDashes(t *testing.T) {
-	name := buildJobName("order-service", "build-image", "20260916-120000")
+	name := buildJobName("order-service", "build-image", "260916120000")
 	if !strings.HasPrefix(name, "neutron-orderservice-build-image-") {
 		t.Errorf("name = %q, want the job key dashes preserved", name)
 	}
@@ -76,7 +76,7 @@ func TestBuildJobNamePreservesJobKeyDashes(t *testing.T) {
 // The K8s label derived from a Job name is capped at 63 chars, so the generated
 // name must never exceed it — the project gives way to keep the job key intact.
 func TestBuildJobNameStaysWithinLabelLimit(t *testing.T) {
-	name := buildJobName("payment-gateway-integration-service", "end-to-end-integration-suite", "20260916-120000")
+	name := buildJobName("payment-gateway-integration-service", "end-to-end-integration-suite", "260916120000")
 	if len(name) > jobNameMaxLength {
 		t.Errorf("name length = %d, want <= %d (%q)", len(name), jobNameMaxLength, name)
 	}
@@ -88,8 +88,8 @@ func TestBuildJobNameStaysWithinLabelLimit(t *testing.T) {
 // A repo URL from which no usable name can be extracted falls back to the
 // pre-existing format rather than producing a stray separator.
 func TestBuildJobNameWithoutProject(t *testing.T) {
-	name := buildJobName("", "build", "20260916-120000")
-	if !strings.HasPrefix(name, "neutron-build-20260916-120000-") {
+	name := buildJobName("", "build", "260916120000")
+	if !strings.HasPrefix(name, "neutron-build-260916120000-") {
 		t.Errorf("name = %q, want the legacy neutron-<job>-<ts>-<rand> shape", name)
 	}
 	if strings.Contains(name, "--") {
@@ -103,7 +103,7 @@ func TestBuildJobNameAlwaysWellFormed(t *testing.T) {
 		{"My_Repo", "Build Image"},
 		{"payment-gateway-integration-service", "end-to-end-integration-suite"},
 	} {
-		name := buildJobName(tc[0], tc[1], "20260916-120000")
+		name := buildJobName(tc[0], tc[1], "260916120000")
 		if !jobNamePattern.MatchString(name) {
 			t.Errorf("name = %q, does not match the expected shape", name)
 		}

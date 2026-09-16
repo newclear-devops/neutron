@@ -200,25 +200,34 @@ func (r *Repository) GetJobStatus(jobName string) (JobStatus, error) {
 	return status, nil
 }
 
-// cutoffDays returns the cutoff timestamp value (YYYYMMDD-000000) used to filter
-// job names by recency. The fixed 15-char timestamp is extracted from the name
-// via jobTimestampExpr() and compared as a string.
+// cutoffDays returns the cutoff timestamp value (YYYYMMDD-000000) that
+// jobTimestampExpr() output is compared against as a string.
 func cutoffDays(days int) string {
 	return time.Now().AddDate(0, 0, -days).Format("20060102") + "-000000"
 }
 
-// jobTimestampExpr returns the SQL expression extracting the fixed 15-char
-// YYYYMMDD-HHMMSS timestamp from a job name. Two name formats coexist:
+// jobTimestampExpr returns the SQL expression normalizing whatever timestamp a
+// job name carries into the fixed 15-char `YYYYMMDD-HHMMSS` form — the form
+// cutoffDays produces, and therefore the form string comparison requires.
 //
-//	new: neutron-<job>-YYYYMMDD-HHMMSS-<4-hex>   (timestamp ends 20 chars from end)
-//	old: neutron-<job>-YYYYMMDD-HHMMSS            (timestamp is the last 15 chars)
+// Three name layouts coexist, each located by counting from the END of the name
+// (which is what makes it safe to keep adding segments at the front):
 //
-// In the new format the char 5 positions from the end is the '-' separator
-// before the random suffix; in the old format that position is a digit of the
-// seconds. Branching on it lets both formats yield their timestamp, so old rows
-// keep aging out of the recency windows correctly after the format change.
+//	current:  neutron-<project>-<job>-YYMMDDHHMMSS-<4-hex>
+//	previous: neutron-<job>-YYYYMMDD-HHMMSS-<4-hex>
+//	original: neutron-<job>-YYYYMMDD-HHMMSS
+//
+// The discriminators only inspect the tail: with a 4-char random suffix the char
+// 5 positions from the end is the '-' before it, and with the compact timestamp
+// the char 18 positions from the end is the '-' before the timestamp. The
+// current layout is expanded back to the century-bearing form so that rows in
+// the older layouts keep aging out of the recency windows correctly — the "20"
+// prefix makes this wrong from 2100 onwards.
 func jobTimestampExpr() string {
-	return "CASE WHEN SUBSTRING(name, LENGTH(name) - 4, 1) = '-' " +
+	return "CASE " +
+		"WHEN SUBSTRING(name, LENGTH(name) - 17, 1) = '-' " +
+		"THEN CONCAT('20', SUBSTRING(name, LENGTH(name) - 16, 6), '-', SUBSTRING(name, LENGTH(name) - 10, 6)) " +
+		"WHEN SUBSTRING(name, LENGTH(name) - 4, 1) = '-' " +
 		"THEN SUBSTRING(name, LENGTH(name) - 19, 15) " +
 		"ELSE RIGHT(name, 15) END"
 }

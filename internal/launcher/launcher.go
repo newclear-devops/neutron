@@ -47,7 +47,11 @@ func NewLauncher(namespace string, runnerConfig model.RunnerConfig, initImage st
 }
 
 func (l *Launcher) CreateJob(neutronHost string) *batchv1.Job {
-	ts := time.Now().Format("20060102-150405")
+	// YYMMDDHHMMSS rather than YYYYMMDD-HHMMSS: same second granularity in three
+	// fewer characters, which go to the project/job segments instead. Millenium
+	// and century are absent from the name, so anything reading it back prefixes
+	// "20" — see jobTimestampExpr for the SQL side.
+	ts := time.Now().Format("060102150405")
 	fullJobName := buildJobName(parser.ExtractRepoName(l.RunnerConfig.GitRepoUrl), l.RunnerConfig.JobName, ts)
 	var checkoutCommand string
 	if l.RunnerConfig.Trigger == "MR" && l.RunnerConfig.TargetBranch != "" {
@@ -201,7 +205,7 @@ const (
 	// maxNamePartLength caps each variable segment before the combined budget
 	// below is applied, so one runaway segment cannot eat the whole name.
 	maxNamePartLength  = 20
-	timestampLength    = 15 // YYYYMMDD-HHMMSS
+	timestampLength    = 12 // YYMMDDHHMMSS — deliberately compact; see jobTimestampExpr
 	randomSuffixLength = 4
 	// namePartsBudget is what remains for project+job once the fixed parts are
 	// subtracted: len("neutron") + 4 separators + timestamp + random suffix.
