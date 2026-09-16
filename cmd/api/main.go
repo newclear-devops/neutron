@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"fmt"
 	"io/fs"
 	"log"
@@ -98,14 +100,21 @@ func main() {
 	}
 	r.StaticFS("/static", http.FS(subStaticFs))
 
-	// SPA: serve index.html for all non-API, non-static routes
+	// SPA: serve index.html for all non-API, non-static routes. The SPA is a
+	// single embedded file with no versioned filename, so without validators a
+	// browser happily keeps serving the copy it cached weeks ago and renders it
+	// against an API it no longer matches. Hash the payload once into an ETag
+	// and pair it with no-cache so every deploy is picked up.
+	indexHTML, err := staticFs.ReadFile("static/index.html")
+	if err != nil {
+		log.Fatalf("cannot read embedded index.html: %v", err)
+	}
+	indexSum := sha256.Sum256(indexHTML)
+	indexETag := `"` + hex.EncodeToString(indexSum[:]) + `"`
 	r.NoRoute(func(c *gin.Context) {
-		data, err := staticFs.ReadFile("static/index.html")
-		if err != nil {
-			c.String(http.StatusInternalServerError, "SPA not found")
-			return
-		}
-		c.Data(http.StatusOK, "text/html; charset=utf-8", data)
+		c.Header("ETag", indexETag)
+		c.Header("Cache-Control", "no-cache, must-revalidate")
+		c.Data(http.StatusOK, "text/html; charset=utf-8", indexHTML)
 	})
 
 	server := NewServer(config, repo, clientSet, notifyClient, ccworkRobot)
