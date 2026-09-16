@@ -204,18 +204,29 @@
         return appConfig.logUrl.replace('{namespace}', encodeURIComponent(appConfig.namespace)).replace('{podId}', encodeURIComponent(podId));
     }
 
-    function isPodLogExpired(podName) {
-        // Pod name format: neutron-{jobName}-{YYYYMMDD-HHMMSS}-{random}{podSuffix}
-        var match = podName.match(/(\d{8}-\d{6})/);
-        if (!match) return false;
+    // Job and pod names end with a run timestamp in one of the layouts that have
+    // shipped over time: YYMMDDHHMMSS (current), YYYYMMDD-HHMMSS, and the same
+    // without the random suffix. Returns the run start as a Date, or null when
+    // the name matches none of them. Unanchored, because a pod name carries an
+    // extra K8s-generated suffix after the job name.
+    function parseNameTimestamp(name) {
+        var match = String(name || '').match(/(\d{12}|\d{8}-\d{6})/);
+        if (!match) return null;
         var ts = match[1];
-        var y = parseInt(ts.substring(0, 4), 10);
-        var m = parseInt(ts.substring(4, 6), 10) - 1;
-        var d = parseInt(ts.substring(6, 8), 10);
-        var hh = parseInt(ts.substring(9, 11), 10);
-        var mm = parseInt(ts.substring(11, 13), 10);
-        var ss = parseInt(ts.substring(13, 15), 10);
-        var podDate = new Date(y, m, d, hh, mm, ss);
+        if (ts.length === 12) {
+            return new Date(2000 + parseInt(ts.substring(0, 2), 10), parseInt(ts.substring(2, 4), 10) - 1,
+                parseInt(ts.substring(4, 6), 10), parseInt(ts.substring(6, 8), 10),
+                parseInt(ts.substring(8, 10), 10), parseInt(ts.substring(10, 12), 10));
+        }
+        return new Date(parseInt(ts.substring(0, 4), 10), parseInt(ts.substring(4, 6), 10) - 1,
+            parseInt(ts.substring(6, 8), 10), parseInt(ts.substring(9, 11), 10),
+            parseInt(ts.substring(11, 13), 10), parseInt(ts.substring(13, 15), 10));
+    }
+
+    function isPodLogExpired(podName) {
+        // Pod name format: neutron-[{project}-]{jobName}-{timestamp}-{random}{podSuffix}
+        var podDate = parseNameTimestamp(podName);
+        if (!podDate) return false;
         var diff = Date.now() - podDate.getTime();
         return diff > 7 * 24 * 60 * 60 * 1000;
     }
@@ -543,12 +554,12 @@
                         '<tr><td style="padding:8px;border-bottom:1px solid #f3f4f6"><code>TRIGGER</code></td><td style="padding:8px;border-bottom:1px solid #f3f4f6">Trigger type</td><td style="padding:8px;border-bottom:1px solid #f3f4f6"><code>PUSH</code>, <code>MR</code>, <code>TAG</code>, <code>API</code></td></tr>' +
                         '<tr><td style="padding:8px;border-bottom:1px solid #f3f4f6"><code>CODE_REF</code></td><td style="padding:8px;border-bottom:1px solid #f3f4f6">Branch name (PUSH), tag name (TAG), or empty (MR)</td><td style="padding:8px;border-bottom:1px solid #f3f4f6"><code>main</code>, <code>v1.2.3</code>, <code></code></td></tr>' +
                         '<tr><td style="padding:8px;border-bottom:1px solid #f3f4f6"><code>JOB_NAME</code></td><td style="padding:8px;border-bottom:1px solid #f3f4f6">Job name from neutron.yaml</td><td style="padding:8px;border-bottom:1px solid #f3f4f6"><code>build</code></td></tr>' +
-                        '<tr><td style="padding:8px;border-bottom:1px solid #f3f4f6"><code>FULL_JOB_NAME</code></td><td style="padding:8px;border-bottom:1px solid #f3f4f6">Full K8s job name with timestamp and random suffix</td><td style="padding:8px;border-bottom:1px solid #f3f4f6"><code>neutron-build-20250101-120000-3f2a</code></td></tr>' +
+                        '<tr><td style="padding:8px;border-bottom:1px solid #f3f4f6"><code>FULL_JOB_NAME</code></td><td style="padding:8px;border-bottom:1px solid #f3f4f6">Full K8s job name: project segment, job key, timestamp and random suffix</td><td style="padding:8px;border-bottom:1px solid #f3f4f6"><code>neutron-orderservice-build-250101120000-3f2a</code></td></tr>' +
                         '<tr><td style="padding:8px;border-bottom:1px solid #f3f4f6"><code>COMMIT_SHA</code></td><td style="padding:8px;border-bottom:1px solid #f3f4f6">Git commit SHA being built</td><td style="padding:8px;border-bottom:1px solid #f3f4f6"><code>a1b2c3d4e5f6...</code></td></tr>' +
                         '<tr><td style="padding:8px;border-bottom:1px solid #f3f4f6"><code>GIT_REPO_URL</code></td><td style="padding:8px;border-bottom:1px solid #f3f4f6">Repository clone URL (SSH)</td><td style="padding:8px;border-bottom:1px solid #f3f4f6"><code>git@gitlab.example.com:group/project.git</code></td></tr>' +
                         '<tr><td style="padding:8px;border-bottom:1px solid #f3f4f6"><code>PROJECT_NAME</code></td><td style="padding:8px;border-bottom:1px solid #f3f4f6">Repository name (last path segment)</td><td style="padding:8px;border-bottom:1px solid #f3f4f6"><code>project</code></td></tr>' +
-                        '<tr><td style="padding:8px;border-bottom:1px solid #f3f4f6"><code>PIPELINE_URL</code></td><td style="padding:8px;border-bottom:1px solid #f3f4f6">Neutron UI link to job status page</td><td style="padding:8px;border-bottom:1px solid #f3f4f6"><code>https://neutron.example.com/#/status/neutron-build-20250101-120000-3f2a</code></td></tr>' +
-                        '<tr><td style="padding:8px;border-bottom:1px solid #f3f4f6"><code>POD_NAME</code></td><td style="padding:8px;border-bottom:1px solid #f3f4f6">Kubernetes pod name</td><td style="padding:8px;border-bottom:1px solid #f3f4f6"><code>neutron-build-20250101-120000-abcde</code></td></tr>' +
+                        '<tr><td style="padding:8px;border-bottom:1px solid #f3f4f6"><code>PIPELINE_URL</code></td><td style="padding:8px;border-bottom:1px solid #f3f4f6">Neutron UI link to job status page</td><td style="padding:8px;border-bottom:1px solid #f3f4f6"><code>https://neutron.example.com/#/status/neutron-orderservice-build-250101120000-3f2a</code></td></tr>' +
+                        '<tr><td style="padding:8px;border-bottom:1px solid #f3f4f6"><code>POD_NAME</code></td><td style="padding:8px;border-bottom:1px solid #f3f4f6">Kubernetes pod name</td><td style="padding:8px;border-bottom:1px solid #f3f4f6"><code>neutron-orderservice-build-250101120000-abcde</code></td></tr>' +
                         '<tr><td style="padding:8px;border-bottom:1px solid #f3f4f6"><code>POD_NAMESPACE</code></td><td style="padding:8px;border-bottom:1px solid #f3f4f6">Kubernetes namespace</td><td style="padding:8px;border-bottom:1px solid #f3f4f6"><code>default</code></td></tr>' +
                         '<tr><td style="padding:8px;border-bottom:1px solid #f3f4f6"><code>RUNNER_PLATFORM</code></td><td style="padding:8px;border-bottom:1px solid #f3f4f6">Code hosting platform</td><td style="padding:8px;border-bottom:1px solid #f3f4f6"><code>gitlab</code>, <code>codeup</code></td></tr>' +
                     '</tbody>' +
@@ -662,10 +673,31 @@
     }
 
     // --- Project Jobs ---
-    function getJobLogicalName(fullName) {
-        // Job name format: neutron-{jobName}-{YYYYMMDD-HHMMSS}[-{4-char random suffix}]
-        // The random suffix was added later; tolerate both old and new formats.
-        return (fullName || '').replace(/^neutron-/, '').replace(/-\d{8}-\d{6}(?:-[0-9a-f]{4})?$/, '');
+
+    // Mirrors launcher.projectNamePart(): lowercase, keep only letters and
+    // digits, cap at 20 chars. Keeping the two in sync is what makes it possible
+    // to strip the project segment back off a generated job name.
+    function projectSlug(repoUrl) {
+        return String(getRepoName(repoUrl) || '').toLowerCase().replace(/[^a-z0-9]/g, '').substring(0, 20);
+    }
+
+    // Job name format: neutron-[{project}-]{jobName}-{timestamp}[-{4-char random suffix}]
+    // The project segment, the compact YYMMDDHHMMSS timestamp and the random
+    // suffix were each added later, so older rows must still parse.
+    function getJobLogicalName(fullName, slug) {
+        var name = fullName || '';
+        var prefix = 'neutron-';
+        // Only an exact match counts: guessing shorter prefixes could strip a
+        // leading piece off an old-style job key that happens to share a few
+        // characters with the project name. Rows whose name exceeded the length
+        // budget (very long project + very long job key, where the project gets
+        // trimmed server-side) fall through and keep their project segment here
+        // — cosmetic only, every row of a project gets the same treatment.
+        if (slug) {
+            var withProject = prefix + slug + '-';
+            if (name.indexOf(withProject) === 0) { prefix = withProject; }
+        }
+        return name.slice(prefix.length).replace(/-(\d{12}|\d{8}-\d{6})(?:-[0-9a-f]{4})?$/, '');
     }
 
     function renderProjectJobs(projectId) {
@@ -707,6 +739,8 @@
                         '</div>';
             }
 
+            var slug = project ? projectSlug(project.RepoUrl) : '';
+
             // Display jobs
             var jobsData = results[1];
             if (jobsData.error) {
@@ -719,7 +753,7 @@
             var seen = {};
             var filterSelect = document.getElementById('jobNameFilter');
             for (var i = 0; i < allJobs.length; i++) {
-                var ln = getJobLogicalName(allJobs[i].Name);
+                var ln = getJobLogicalName(allJobs[i].Name, slug);
                 if (!seen[ln]) {
                     seen[ln] = true;
                     var opt = document.createElement('option');
@@ -731,7 +765,7 @@
 
             filterSelect.addEventListener('change', function() {
                 var selected = this.value;
-                var filtered = selected ? allJobs.filter(function(j) { return getJobLogicalName(j.Name) === selected; }) : allJobs;
+                var filtered = selected ? allJobs.filter(function(j) { return getJobLogicalName(j.Name, slug) === selected; }) : allJobs;
                 renderProjectJobsList(filtered);
             });
 
@@ -765,16 +799,8 @@
             }
             // Calculate duration from job name timestamp to completion time
             var durationHtml = '-';
-            var nameMatch = (job.Name || '').match(/(\d{8}-\d{6})/);
-            if (nameMatch) {
-                var ts = nameMatch[1];
-                var y = parseInt(ts.substring(0, 4), 10);
-                var m = parseInt(ts.substring(4, 6), 10) - 1;
-                var d = parseInt(ts.substring(6, 8), 10);
-                var hh = parseInt(ts.substring(9, 11), 10);
-                var mm = parseInt(ts.substring(11, 13), 10);
-                var ss = parseInt(ts.substring(13, 15), 10);
-                var startTime = new Date(y, m, d, hh, mm, ss);
+            var startTime = parseNameTimestamp(job.Name);
+            if (startTime) {
                 var endTime = job.CompletedAt ? new Date(job.CompletedAt) : new Date();
                 var diffSec = Math.round((endTime - startTime) / 1000);
                 if (diffSec < 60) {
