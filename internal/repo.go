@@ -336,6 +336,13 @@ func statusSearchClause(word string) (string, bool) {
 		return `status LIKE '%"succeeded":1%'`, true
 	case "fail", "failed", "failure":
 		return `status LIKE '%"failed":1%'`, true
+	case "pending":
+		// No outcome recorded yet — either the status is still empty (the runner
+		// has not reported) or none of the three flags is set. The old
+		// client-side filter treated exactly these as pending, so the search box
+		// has to keep finding them.
+		return `(status IS NULL OR status = '' OR ` +
+			`(status NOT LIKE '%"active":1%' AND status NOT LIKE '%"succeeded":1%' AND status NOT LIKE '%"failed":1%'))`, true
 	}
 	return "", false
 }

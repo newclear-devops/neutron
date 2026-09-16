@@ -753,6 +753,10 @@
                         '</div>';
             }
 
+            // Needed to parse job keys out of names written before the job_name
+            // column existed but after the project segment was added to them.
+            _projectState.slug = project ? projectSlug(project.RepoUrl) : '';
+
             var namesData = results[1];
             var filterSelect = document.getElementById('jobNameFilter');
             var names = (namesData && namesData.job_names) || [];
@@ -776,7 +780,9 @@
 
     // --- Project jobs: server-side paging ---
     var PROJECT_PAGE_SIZE = 20;
-    var _projectState = { id: '', page: 0, jobName: '', total: 0, jobs: [] };
+    // slug is kept alongside the paging state: the list rendering needs it to
+    // strip the project segment off names that predate the job_name column.
+    var _projectState = { id: '', page: 0, jobName: '', slug: '', total: 0, jobs: [] };
 
     function loadProjectJobs() {
         var s = _projectState;
@@ -855,9 +861,11 @@
                     durationHtml = '<span style="color:#2563eb">' + durationHtml + '</span>';
                 }
             }
-            // Prefer the stored job key; rows created before the job_name
-            // column existed fall back to parsing the generated name.
-            var label = job.JobName || getJobLogicalName(job.Name);
+            // Prefer the stored job key. Rows without it fall back to parsing
+            // the generated name, which needs the project slug: rows created
+            // after the project segment was added to the name but before the
+            // job_name column existed still carry it (neutron-<project>-<job>-…).
+            var label = job.JobName || getJobLogicalName(job.Name, s.slug);
             html += '<tr><td><a href="#/status/' + escAttr(job.Name) + '" title="' + escAttr(job.Name) + '">' + escHtml(label) + '</a></td><td>' + statusHtml + '</td><td>' + escHtml(status.trigger_type || '-') + '</td><td style="font-size:1.3rem;color:#606c76">' + durationHtml + '</td><td><a href="#/status/' + escAttr(job.Name) + '" class="btn btn-outline" style="padding:4px 12px;font-size:1.2rem">Detail</a></td></tr>';
         }
         html += '</tbody></table>';
