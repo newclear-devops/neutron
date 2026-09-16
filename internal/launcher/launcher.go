@@ -48,7 +48,7 @@ func NewLauncher(namespace string, runnerConfig model.RunnerConfig, initImage st
 
 func (l *Launcher) CreateJob(neutronHost string) *batchv1.Job {
 	ts := time.Now().Format("20060102-150405")
-	fullJobName := buildJobName(l.RunnerConfig.JobName, ts)
+	fullJobName := buildJobName(parser.ExtractRepoName(l.RunnerConfig.GitRepoUrl), l.RunnerConfig.JobName, ts)
 	var checkoutCommand string
 	if l.RunnerConfig.Trigger == "MR" && l.RunnerConfig.TargetBranch != "" {
 		// clone target branch, fetch source commit, merge
@@ -194,15 +194,95 @@ func int32Ptr(i int32) *int32 {
 	return &i
 }
 
-// buildJobName constructs a unique K8s Job name from a logical job name and a
-// second-granularity timestamp. The name is `neutron-<job>-<ts>-<random>`, where
-// the 4-char random suffix ensures two triggers of the same job within the same
-// second no longer collide (the timestamp alone previously did). The suffix sits
-// after the timestamp so existing consumers that parse the trailing
-// `YYYYMMDD-HHMMSS` (DB recency filters, frontend duration/log-expiry) keep
-// working unchanged.
-func buildJobName(jobName, ts string) string {
-	return fmt.Sprintf("neutron-%s-%s-%s", jobName, ts, randSuffix())
+const (
+	// jobNameMaxLength caps a generated Job name at the K8s label value limit, so
+	// the `job-name` label the Job controller derives from it stays complete.
+	jobNameMaxLength = 63
+	// maxNamePartLength caps each variable segment before the combined budget
+	// below is applied, so one runaway segment cannot eat the whole name.
+	maxNamePartLength  = 20
+	timestampLength    = 15 // YYYYMMDD-HHMMSS
+	randomSuffixLength = 4
+	// namePartsBudget is what remains for project+job once the fixed parts are
+	// subtracted: len("neutron") + 4 separators + timestamp + random suffix.
+	namePartsBudget = jobNameMaxLength - (len("neutron") + 4 + timestampLength + randomSuffixLength)
+)
+
+// projectNamePart reduces a repo-derived name to its letters and digits,
+// lowercased, because a K8s object name accepts only [a-z0-9-.] while repo names
+// routinely carry '_', '.' or uppercase — either would make Job creation fail
+// outright. Everything else is dropped rather than transliterated to '-', which
+// also keeps '-' unambiguous as the separator between name segments.
+func projectNamePart(s string, maxLen int) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(s) {
+		if b.Len() >= maxLen {
+			break
+		}
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// jobNamePart makes a pipeline job key safe for use in an object name: lowercase,
+// every other run of characters collapsed into a single '-', leading and trailing
+// separators trimmed. Unlike the project segment, dashes are preserved here —
+// they are part of how job keys are written in neutron.yaml.
+func jobNamePart(s string, maxLen int) string {
+	var b strings.Builder
+	pendingDash := true // do not open the name with a separator
+	for _, r := range strings.ToLower(s) {
+		if b.Len() >= maxLen {
+			break
+		}
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			pendingDash = false
+			continue
+		}
+		if pendingDash {
+			continue
+		}
+		b.WriteRune('-')
+		pendingDash = true
+	}
+	return strings.TrimRight(b.String(), "-")
+}
+
+// buildJobName constructs a unique K8s Job name:
+//
+//	neutron-<project>-<job>-<YYYYMMDD-HHMMSS>-<4-hex>
+//
+// <project> is the repository name extracted from the repo URL. Projects sharing
+// a default pipeline launch identically named jobs, so without it their pods are
+// indistinguishable in `kubectl get pods`. It is omitted when the repo URL yields
+// nothing usable, leaving the pre-existing format intact.
+//
+// The 4-char random suffix keeps two triggers of the same job within the same
+// second from colliding (the timestamp alone previously did).
+//
+// The trailing -<timestamp>-<random> layout must survive future edits: the SQL
+// recency filter (internal.jobTimestampExpr) locates the timestamp by counting
+// characters from the END of the name, and the frontend derives both the run
+// duration and the pod-log expiry window from that trailing timestamp. Adding
+// segments is only ever safe at the front.
+func buildJobName(projectName, jobName, ts string) string {
+	p := projectNamePart(projectName, maxNamePartLength)
+	j := jobNamePart(jobName, maxNamePartLength)
+	if j == "" {
+		j = "job"
+	}
+	if p == "" {
+		return fmt.Sprintf("neutron-%s-%s-%s", j, ts, randSuffix())
+	}
+	if len(p)+len(j) > namePartsBudget {
+		// The job key is the more identifying half, so the project gives way.
+		// j is capped at 20 < namePartsBudget, so this never goes negative.
+		p = p[:namePartsBudget-len(j)]
+	}
+	return fmt.Sprintf("neutron-%s-%s-%s-%s", p, j, ts, randSuffix())
 }
 
 // randSuffix returns a 4-character lowercase hex string (16 random bits) for the

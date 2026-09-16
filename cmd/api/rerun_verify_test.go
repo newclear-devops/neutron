@@ -37,8 +37,10 @@ func TestLauncherFromSpecRebuild(t *testing.T) {
 
 	job := srv.launcherFromSpec(spec).CreateJob(srv.config.Host)
 
-	if !strings.HasPrefix(job.Name, "neutron-build-") {
-		t.Errorf("job name = %q, want neutron-build-*", job.Name)
+	// The repo-derived project segment comes first: spec.GitRepoUrl is
+	// git@gitlab.example.com:backend/order-service.git → "orderservice".
+	if !strings.HasPrefix(job.Name, "neutron-orderservice-build-") {
+		t.Errorf("job name = %q, want neutron-orderservice-build-*", job.Name)
 	}
 	if got := job.Annotations["triggerType"]; got != "PUSH" {
 		t.Errorf("annotation triggerType = %q, want PUSH", got)
