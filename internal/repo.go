@@ -331,20 +331,32 @@ func applyJobSearch(q *gorm.DB, query string) *gorm.DB {
 func statusSearchClause(word string) (string, bool) {
 	switch word {
 	case "running", "active":
-		return `status LIKE '%"active":1%'`, true
+		return flagClause("active"), true
 	case "success", "succeeded":
-		return `status LIKE '%"succeeded":1%'`, true
+		return flagClause("succeeded"), true
 	case "fail", "failed", "failure":
-		return `status LIKE '%"failed":1%'`, true
+		return flagClause("failed"), true
 	case "pending":
 		// No outcome recorded yet — either the status is still empty (the runner
 		// has not reported) or none of the three flags is set. The old
 		// client-side filter treated exactly these as pending, so the search box
-		// has to keep finding them.
+		// has to keep finding them. A plain LIKE is correct on the negated side:
+		// any occurrence of the flag means there is activity, whatever its value.
 		return `(status IS NULL OR status = '' OR ` +
 			`(status NOT LIKE '%"active":1%' AND status NOT LIKE '%"succeeded":1%' AND status NOT LIKE '%"failed":1%'))`, true
 	}
 	return "", false
+}
+
+// flagClause matches `"flag":1` in the persisted status JSON. The value is
+// always a 0/1 flag today, but a bare LIKE '%"flag":1%' would also match
+// ":10", ":11", … should that ever change, so the digit is anchored to the
+// JSON separator that necessarily follows it (a "," or the closing "}").
+func flagClause(flag string) string {
+	return strings.ReplaceAll(
+		`(status LIKE '%"__FLAG__":1,%' OR status LIKE '%"__FLAG__":1}%')`,
+		"__FLAG__", flag,
+	)
 }
 
 // ListRunningJobs returns not-yet-completed jobs for a project, excluding one

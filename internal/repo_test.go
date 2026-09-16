@@ -44,7 +44,12 @@ func TestStatusSearchClause(t *testing.T) {
 			word:    "running",
 			wantOK:  true,
 			matches: []string{mustJSON(t, JobStatus{Active: 1})},
-			misses:  []string{"", mustJSON(t, JobStatus{Succeeded: 1}), mustJSON(t, JobStatus{Failed: 1})},
+			misses: []string{
+				"", mustJSON(t, JobStatus{Succeeded: 1}), mustJSON(t, JobStatus{Failed: 1}),
+				// The value is a 0/1 flag today, but the LIKE must not match a
+				// multi-digit value whose first digit happens to be 1.
+				mustJSON(t, JobStatus{Active: 10}),
+			},
 		},
 		{
 			word:    "failed",
@@ -62,6 +67,9 @@ func TestStatusSearchClause(t *testing.T) {
 				mustJSON(t, JobStatus{Active: 1}),
 				mustJSON(t, JobStatus{Succeeded: 1}),
 				mustJSON(t, JobStatus{Failed: 1}),
+				// Deliberately loose on the negated side: any occurrence of the
+				// flag means there is activity, so the run is not pending.
+				mustJSON(t, JobStatus{Active: 10}),
 			},
 		},
 		{word: "order-service", wantOK: false},
