@@ -329,6 +329,30 @@
         try { return JSON.parse(statusStr); } catch(e) { return {}; }
     }
 
+    // --- Timeout for listing requests ---
+    // A fetch only settles once the connection breaks, so an API sitting on a
+    // slow query or a half-open connection leaves the page on "Loading..."
+    // indefinitely, indistinguishable from a page that is merely still working.
+    // Cap it and surface the failure instead.
+    var REQUEST_TIMEOUT_MS = 20000;
+
+    function fetchWithTimeout(url) {
+        var timer = null;
+        var controller = window.AbortController ? new AbortController() : null;
+        if (controller) {
+            timer = setTimeout(function() { controller.abort(); }, REQUEST_TIMEOUT_MS);
+        }
+        return fetch(url, controller ? { signal: controller.signal } : undefined)
+            .then(function(r) { clearTimeout(timer); return r; })
+            .catch(function(err) {
+                clearTimeout(timer);
+                if (err && err.name === 'AbortError') {
+                    throw new Error('request timed out after ' + (REQUEST_TIMEOUT_MS / 1000) + 's');
+                }
+                throw err;
+            });
+    }
+
     // --- Recent Jobs ---
     // Paging and searching both happen in the API now. The window can hold
     // thousands of rows, so fetching all of them just to slice them in the
@@ -347,7 +371,7 @@
         var seq = ++_recentReqSeq;
         var url = '/api/jobs/recent?page=' + (_recentPage + 1) + '&page_size=' + RECENT_PAGE_SIZE +
             (_recentQuery ? '&q=' + encodeURIComponent(_recentQuery) : '');
-        return fetch(url)
+        return fetchWithTimeout(url)
             .then(function(r) { return r.json(); })
             .then(function(data) {
                 var listEl = document.getElementById('recentJobsList');
@@ -716,7 +740,11 @@
     }
 
     function renderProjectJobs(projectId) {
-        _projectState = { id: projectId, page: 0, jobName: '', total: 0, jobs: [] };
+        // Must carry every field declared in the initial value below: the
+        // render guard compares seq against the state, and ++undefined is NaN,
+        // which never equals itself — the page would stay on "Loading..." with
+        // every request succeeding.
+        _projectState = { id: projectId, page: 0, jobName: '', slug: '', total: 0, jobs: [], seq: 0 };
         app.innerHTML =
             '<p class="page-title">Pipeline history</p>' +
             '<div style="margin-bottom:16px;display:flex;gap:12px;align-items:center">' +
@@ -728,10 +756,10 @@
             '<div id="projectPagination" style="text-align:center;margin-top:24px"></div>';
 
         Promise.all([
-            fetch('/api/projects').then(function(r) { return r.json(); }),
+            fetchWithTimeout('/api/projects').then(function(r) { return r.json(); }),
             // Filter options come from the server: the list is paginated, so
             // there is no longer a full set of rows to derive them from.
-            fetch('/api/projects/' + encodeURIComponent(projectId) + '/job-names').then(function(r) { return r.json(); })
+            fetchWithTimeout('/api/projects/' + encodeURIComponent(projectId) + '/job-names').then(function(r) { return r.json(); })
         ]).then(function(results) {
             var projects = results[0].projects || [];
             var project = null;
@@ -797,7 +825,7 @@
         var url = '/api/projects/' + encodeURIComponent(s.id) + '/jobs?page=' + (s.page + 1) +
             '&page_size=' + PROJECT_PAGE_SIZE +
             (s.jobName ? '&job_name=' + encodeURIComponent(s.jobName) : '');
-        return fetch(url)
+        return fetchWithTimeout(url)
             .then(function(r) { return r.json(); })
             .then(function(data) {
                 var el = document.getElementById('jobsList');
