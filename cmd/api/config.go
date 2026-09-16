@@ -45,23 +45,29 @@ func envTrue(key string, set func()) {
 	}
 }
 
+// setCodebase mutates one codebase entry, allocating the map on demand. A
+// config file with no `codebase:` section leaves BaseConfig nil, and writing
+// into a nil map panics — an env-var-only deployment must not crash on startup.
+func setCodebase(config *model.Config, name string, mutate func(*model.CodeBase)) {
+	if config.BaseConfig == nil {
+		config.BaseConfig = make(map[string]model.CodeBase)
+	}
+	cb := config.BaseConfig[name]
+	mutate(&cb)
+	config.BaseConfig[name] = cb
+}
+
 // applyCodebaseEnv applies URL/token/skip-TLS overrides for a single codebase
 // entry from the NEUTRON_<PREFIX>_* environment variables.
 func applyCodebaseEnv(config *model.Config, name, prefix string) {
 	envStr(prefix+"_URL", func(v string) {
-		cb := config.BaseConfig[name]
-		cb.Url = v
-		config.BaseConfig[name] = cb
+		setCodebase(config, name, func(cb *model.CodeBase) { cb.Url = v })
 	})
 	envStr(prefix+"_TOKEN", func(v string) {
-		cb := config.BaseConfig[name]
-		cb.Token = v
-		config.BaseConfig[name] = cb
+		setCodebase(config, name, func(cb *model.CodeBase) { cb.Token = v })
 	})
 	envTrue(prefix+"_SKIP_TLS_VERIFY", func() {
-		cb := config.BaseConfig[name]
-		cb.SkipTLSVerify = true
-		config.BaseConfig[name] = cb
+		setCodebase(config, name, func(cb *model.CodeBase) { cb.SkipTLSVerify = true })
 	})
 }
 
@@ -103,9 +109,7 @@ func applyEnvOverrides(config *model.Config) {
 	applyCodebaseEnv(config, "GitLab", "NEUTRON_GITLAB")
 	applyCodebaseEnv(config, "Codeup", "NEUTRON_CODEUP")
 	envStr("NEUTRON_CODEUP_WEBHOOK_URL", func(v string) {
-		cb := config.BaseConfig["Codeup"]
-		cb.WebhookUrl = v
-		config.BaseConfig["Codeup"] = cb
+		setCodebase(config, "Codeup", func(cb *model.CodeBase) { cb.WebhookUrl = v })
 	})
 
 	envStr("NEUTRON_NOTIFY_URL", func(v string) { config.Notify.Url = v })

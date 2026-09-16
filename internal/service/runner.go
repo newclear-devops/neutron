@@ -69,6 +69,12 @@ func NewRunner(workingDir string, triggerType string, jobName string, reporter m
 	if err != nil {
 		log.Fatal(err)
 	}
+	// A repo neutron.yaml without a `jobs` key (empty file, or a different
+	// top-level shape) unmarshals to a nil Jobs map. Reading it is fine, but the
+	// job-level fallback below writes into it, so flag the case loudly.
+	if hasRepoFile && len(pipeline.Jobs) == 0 {
+		log.Printf("runner: repo neutron.yaml defines no jobs; resolving %q from the default pipeline", jobName)
+	}
 	// Job-level fallback: if the repo's neutron.yaml exists but does not define
 	// this job, look it up in the global default pipeline. The repo job always
 	// wins when both define the name (whole-job override, no field-level merge).
@@ -85,6 +91,11 @@ func NewRunner(workingDir string, triggerType string, jobName string, reporter m
 				log.Printf("runner: default pipeline is invalid yaml: %v", uerr)
 			} else if job, dok := model.ResolveJob(pipeline, defaultPipeline, jobName); dok {
 				log.Printf("using default pipeline job %s", jobName)
+				// pipeline.Jobs is nil when the repo neutron.yaml carried no
+				// jobs key at all; assigning into a nil map panics.
+				if pipeline.Jobs == nil {
+					pipeline.Jobs = make(map[string]model.Job)
+				}
 				pipeline.Jobs[jobName] = job
 			}
 		}
