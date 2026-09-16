@@ -33,7 +33,8 @@ go test ./...
 - `POST /webhook/:id` — receives webhooks, auto-detects platform (GitLab/Codeup) via `X-Codeup-Event` header, fetches `neutron.yaml`, creates K8s Jobs. Query params on the webhook URL are passed as env vars to the pod.
 - `POST /api/trigger` — programmatic pipeline trigger by repo URL, job name, ref, and custom env vars (bypasses trigger type validation)
 - `GET /api/projects` — lists all registered projects
-- `GET /api/projects/:id/jobs` — lists jobs for a project (last 7 days)
+- `GET /api/projects/:id/jobs` — lists jobs for a project (last 7 days), **paginated**: `page` (1-based, capped at 1000), `page_size` (default 20, max 100) and `job_name` (exact logical job key) are query params; the response carries `jobs`, `total`, `page`, `page_size`
+- `GET /api/projects/:id/job-names` — distinct logical job keys a project ran in the window, used to populate the filter dropdown (impossible to derive client-side once the list is paginated)
 - `GET /api/status/:jobName` — job/pod status (JSON). Served from the DB for completed jobs, otherwise from the K8s API. If the K8s Job no longer exists (TTL cleanup) the DB row is served instead, with `stuck: true` when the row never reached a terminal outcome — no more updates will ever arrive for it. Only when neither exists does it 400.
 - `POST /api/report/:jobName` — runners push status back to API server for persistence
 - `POST /api/report/:jobName/link` — set a test report URL for a job (`{"report_url": "..."}`)
@@ -79,7 +80,7 @@ go test ./...
 
 Tables auto-migrated by GORM:
 - `neutron_project` (id, webhook_type, repo_url)
-- `neutron_job` (id, project_id, name, status, notify, spec, completed, completed_at) — `notify` is JSON-encoded `model.Notify`; `spec` is JSON-encoded `model.JobSpec` (rerun snapshot), captured from the job's `neutron.yaml`/webhook at trigger time
+- `neutron_job` (id, project_id, name, **job_name**, status, notify, spec, **params**, completed, completed_at) — `notify` is JSON-encoded `model.Notify`; `spec` is JSON-encoded `model.JobSpec` (rerun snapshot), captured from the job's `neutron.yaml`/webhook at trigger time; `params` is JSON-encoded `model.JobParams` (ref/env/trigger context, see **Trigger Details**). `job_name` is the logical pipeline job key from `neutron.yaml` — it cannot be parsed back out of `name` reliably (both name segments are `[a-z0-9]` and either may be truncated), so it is stored in its own column; empty on rows created before it existed. Indexed on `(project_id, job_name)`.
 - `neutron_pod` (id, job_id, pod_name, pod_uid, phase)
 - `neutron_job_report` (id, job_name, report_url, created_at) — test report link per job
 - `neutron_setting` (key, value, updated_at) — generic key/value store for global config; currently holds the default pipeline under key `default_pipeline` (see **Default Pipeline Fallback**)
@@ -164,6 +165,27 @@ The whole name is capped at **63 chars** (`jobNameMaxLength`), the K8s label val
 Because the timestamp omits the century, every reader of the name prefixes `20` when reconstructing a date (`jobTimestampExpr`, `parseNameTimestamp`). That assumption breaks in 2100.
 
 The runner is told its full name via the `FULL_JOB_NAME` env var and reports to `/api/report/<FULL_JOB_NAME>`; the logical `JOB_NAME` (from `neutron.yaml`) is only used to select steps, never to key DB/K8s lookups.
+
+### Job Listings (pagination & filtering)
+
+`GET /api/projects/:id/jobs` and `GET /api/jobs/recent` are paginated (`page_size` ≤ `MaxPageSize`=100, default `DefaultPageSize`=20; `page` ≤ `MaxPage`=1000 — beyond that the OFFSET only buys scanning, `(page-1)*pageSize` overflows, and nothing in the 7-day window lives that deep) and return `total` alongside the rows. Both used to return **every** row in the 7-day window — including the `status`/`notify`/`spec` text blobs — plus an extra query per row to preload pods, which is the expensive part at a few thousand rows.
+
+Consequences worth remembering:
+
+- **Filtering moved server-side.** The project page's job-name dropdown is built from `GET /api/projects/:id/job-names` (`SELECT DISTINCT job_name`) instead of from the loaded rows, and `job_name` is an exact-match query param.
+- **The recent page's search box is server-side too** (`q`). Status words (`running`/`success`/`failed`/…) map onto the flags inside the status JSON; anything else matches the generated name, the job key, the status payload (which carries `repo_url`/`trigger_type`/`webhook_type`), or the owning project's `repo_url`.
+- `job_name` is empty on rows created before the column existed; such rows simply do not appear in the dropdown, and the UI falls back to parsing the generated name for display.
+
+### Trigger Details (ref / env)
+
+The status page shows the run's trigger context — which ref it ran against and which env vars were injected — from `neutron_job.params` (JSON-encoded `model.JobParams`, written at trigger time by both paths):
+
+- **webhook**: ref = `code_ref` (branch/tag name, falling back to the commit SHA for MRs), env = the webhook URL's query params
+- **`/api/trigger`**: ref = the `ref` field, env = the `env` object — neither was persisted before, which is why this column exists
+
+`params` is deliberately **not** `JobSpec`: a spec is what makes a job rerunnable, and API-triggered jobs must stay non-rerunnable. The status endpoint exposes it as `params` (plus `jobKey`, the logical job key); both are absent for rows created before this change.
+
+Values are rendered verbatim — the status page has no access control, so anything passed through `env` is visible to everyone who can open it.
 
 ### Webhook URL Parameters
 

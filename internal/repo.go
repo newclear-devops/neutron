@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 	"neutron/internal/model"
+	"strings"
 	"time"
 
 	"gorm.io/driver/mysql"
@@ -25,12 +26,19 @@ func (PipelineProject) TableName() string {
 }
 
 type PipelineJob struct {
-	Id          int64         `gorm:"column:id;primaryKey;autoIncrement"`
-	ProjectId   string        `gorm:"column:project_id"`
-	Name        string        `gorm:"column:name;type:varchar(255);uniqueIndex"`
+	Id        int64  `gorm:"column:id;primaryKey;autoIncrement"`
+	ProjectId string `gorm:"column:project_id;index:idx_job_project_name,priority:1"`
+	Name      string `gorm:"column:name;type:varchar(255);uniqueIndex"`
+	// JobName is the logical pipeline job key from neutron.yaml (as opposed to
+	// Name, which is the generated K8s Job name). Stored as its own column
+	// because it cannot be parsed back out of Name reliably — both the project
+	// and the job segment are [a-z0-9], and either can be truncated to fit the
+	// length budget. Empty on rows created before this column existed.
+	JobName     string        `gorm:"column:job_name;type:varchar(255);index:idx_job_project_name,priority:2"`
 	Status      string        `gorm:"column:status;type:text"`
 	Notify      string        `gorm:"column:notify;type:text"` // JSON-encoded model.Notify, captured at trigger time
 	Spec        string        `gorm:"column:spec;type:text"`   // JSON-encoded model.JobSpec for rerun; empty for API-triggered jobs
+	Params      string        `gorm:"column:params;type:text"` // JSON-encoded model.JobParams (ref/env/...), captured at trigger time
 	Completed   bool          `gorm:"column:completed;default:false"`
 	CompletedAt *time.Time    `gorm:"column:completed_at"`
 	Pods        []PipelinePod `gorm:"foreignKey:JobId"`
@@ -232,18 +240,128 @@ func jobTimestampExpr() string {
 		"ELSE RIGHT(name, 15) END"
 }
 
-func (r *Repository) ListProjectJobs(projectId string, days int) ([]PipelineJob, error) {
-	var jobs []PipelineJob
-	err := r.db.Where("project_id = ? AND "+jobTimestampExpr()+" >= ?", projectId, cutoffDays(days)).
-		Order("id DESC").Preload("Pods").Find(&jobs).Error
-	return jobs, err
+// Paging limits for the job listings. These endpoints used to return every row
+// in the recency window at once, which for an active project is thousands of
+// rows including the notify/spec/status text blobs — and an extra query per row
+// to preload pods.
+const (
+	DefaultPageSize = 20
+	MaxPageSize     = 100
+	// MaxPage caps how deep a caller may page. Nothing inside the recency
+	// window lives past MaxPage*MaxPageSize rows, so an unlimited page would
+	// only let MySQL scan to the end of a table it will never reach — and at
+	// extreme values (page-1)*pageSize overflows into a negative OFFSET.
+	MaxPage = 1000
+)
+
+// recentWindow scopes a query to jobs whose embedded timestamp falls inside the
+// last `days` days. Shared by every listing so they all age out the same way.
+func recentWindow(days int) (string, string) {
+	return jobTimestampExpr() + " >= ?", cutoffDays(days)
 }
 
-func (r *Repository) ListAllRecentJobs(days int) ([]PipelineJob, error) {
+// ListProjectJobsPaged returns one page of a project's recent jobs, newest
+// first, plus the total number of rows in the window so the caller can render
+// pagination. Filtering by the logical job key (JobName) is done here rather
+// than in the client because the client no longer holds every row.
+func (r *Repository) ListProjectJobsPaged(projectId, jobName string, days, pageSize, page int) ([]PipelineJob, int64, error) {
+	window, cutoff := recentWindow(days)
+	q := r.db.Where("project_id = ? AND "+window, projectId, cutoff)
+	if jobName != "" {
+		q = q.Where("job_name = ?", jobName)
+	}
+
+	var total int64
+	if err := q.Model(&PipelineJob{}).Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
 	var jobs []PipelineJob
-	err := r.db.Where(jobTimestampExpr()+" >= ?", cutoffDays(days)).
-		Order("id DESC").Preload("Pods").Find(&jobs).Error
-	return jobs, err
+	err := q.Order("id DESC").Limit(pageSize).Offset((page - 1) * pageSize).Preload("Pods").Find(&jobs).Error
+	return jobs, total, err
+}
+
+// ListProjectJobNames returns the distinct logical job keys a project has run
+// inside the window, for populating the filter dropdown. Rows predating the
+// job_name column contribute nothing and are simply absent.
+func (r *Repository) ListProjectJobNames(projectId string, days int) ([]string, error) {
+	window, cutoff := recentWindow(days)
+	var names []string
+	err := r.db.Model(&PipelineJob{}).
+		Where("project_id = ? AND job_name <> '' AND "+window, projectId, cutoff).
+		Distinct("job_name").Order("job_name").Pluck("job_name", &names).Error
+	return names, err
+}
+
+// ListRecentJobsPaged returns one page of the newest jobs across all projects,
+// optionally narrowed by a free-text search, plus the total row count.
+func (r *Repository) ListRecentJobsPaged(query string, days, pageSize, page int) ([]PipelineJob, int64, error) {
+	window, cutoff := recentWindow(days)
+	q := r.db.Where(window, cutoff)
+	q = applyJobSearch(q, query)
+
+	var total int64
+	if err := q.Model(&PipelineJob{}).Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	var jobs []PipelineJob
+	err := q.Order("id DESC").Limit(pageSize).Offset((page - 1) * pageSize).Preload("Pods").Find(&jobs).Error
+	return jobs, total, err
+}
+
+// applyJobSearch narrows a job query by the recent page's search box. Status
+// words map onto the flags inside the status JSON (that is how the outcome is
+// persisted); anything else matches the generated name, the logical job key, the
+// owning project's repo URL, or the status payload itself, which carries
+// repo_url / trigger_type / webhook_type.
+func applyJobSearch(q *gorm.DB, query string) *gorm.DB {
+	query = strings.ToLower(strings.TrimSpace(query))
+	if query == "" {
+		return q
+	}
+	if clause, ok := statusSearchClause(query); ok {
+		return q.Where(clause)
+	}
+	like := "%" + query + "%"
+	return q.Where(
+		"(LOWER(name) LIKE ? OR LOWER(job_name) LIKE ? OR LOWER(status) LIKE ? "+
+			"OR project_id IN (SELECT id FROM neutron_project WHERE LOWER(repo_url) LIKE ?))",
+		like, like, like, like,
+	)
+}
+
+// statusSearchClause maps a search word onto the JobStatus flags as they appear
+// in the persisted JSON (Go marshals it without spaces).
+func statusSearchClause(word string) (string, bool) {
+	switch word {
+	case "running", "active":
+		return flagClause("active"), true
+	case "success", "succeeded":
+		return flagClause("succeeded"), true
+	case "fail", "failed", "failure":
+		return flagClause("failed"), true
+	case "pending":
+		// No outcome recorded yet — either the status is still empty (the runner
+		// has not reported) or none of the three flags is set. The old
+		// client-side filter treated exactly these as pending, so the search box
+		// has to keep finding them. A plain LIKE is correct on the negated side:
+		// any occurrence of the flag means there is activity, whatever its value.
+		return `(status IS NULL OR status = '' OR ` +
+			`(status NOT LIKE '%"active":1%' AND status NOT LIKE '%"succeeded":1%' AND status NOT LIKE '%"failed":1%'))`, true
+	}
+	return "", false
+}
+
+// flagClause matches `"flag":1` in the persisted status JSON. The value is
+// always a 0/1 flag today, but a bare LIKE '%"flag":1%' would also match
+// ":10", ":11", … should that ever change, so the digit is anchored to the
+// JSON separator that necessarily follows it (a "," or the closing "}").
+func flagClause(flag string) string {
+	return strings.ReplaceAll(
+		`(status LIKE '%"__FLAG__":1,%' OR status LIKE '%"__FLAG__":1}%')`,
+		"__FLAG__", flag,
+	)
 }
 
 // ListRunningJobs returns not-yet-completed jobs for a project, excluding one
