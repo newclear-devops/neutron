@@ -31,6 +31,10 @@ func TestParsePageParams(t *testing.T) {
 		// Junk falls back to the defaults rather than failing the request.
 		{query: "page=abc&page_size=-5", wantPage: 1, wantPageSize: 20},
 		{query: "page=0", wantPage: 1, wantPageSize: 20},
+		// A deep page number is clamped too: past this the OFFSET is pure
+		// scanning, and (page-1)*pageSize would otherwise overflow.
+		{query: "page=100000", wantPage: 1000, wantPageSize: 20},
+		{query: "page=2147483647&page_size=100", wantPage: 1000, wantPageSize: 100},
 	}
 
 	for _, tc := range cases {

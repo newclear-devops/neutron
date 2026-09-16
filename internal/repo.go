@@ -247,6 +247,11 @@ func jobTimestampExpr() string {
 const (
 	DefaultPageSize = 20
 	MaxPageSize     = 100
+	// MaxPage caps how deep a caller may page. Nothing inside the recency
+	// window lives past MaxPage*MaxPageSize rows, so an unlimited page would
+	// only let MySQL scan to the end of a table it will never reach — and at
+	// extreme values (page-1)*pageSize overflows into a negative OFFSET.
+	MaxPage = 1000
 )
 
 // recentWindow scopes a query to jobs whose embedded timestamp falls inside the

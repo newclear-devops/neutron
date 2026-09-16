@@ -33,7 +33,7 @@ go test ./...
 - `POST /webhook/:id` — receives webhooks, auto-detects platform (GitLab/Codeup) via `X-Codeup-Event` header, fetches `neutron.yaml`, creates K8s Jobs. Query params on the webhook URL are passed as env vars to the pod.
 - `POST /api/trigger` — programmatic pipeline trigger by repo URL, job name, ref, and custom env vars (bypasses trigger type validation)
 - `GET /api/projects` — lists all registered projects
-- `GET /api/projects/:id/jobs` — lists jobs for a project (last 7 days), **paginated**: `page` (1-based), `page_size` (default 20, max 100) and `job_name` (exact logical job key) are query params; the response carries `jobs`, `total`, `page`, `page_size`
+- `GET /api/projects/:id/jobs` — lists jobs for a project (last 7 days), **paginated**: `page` (1-based, capped at 1000), `page_size` (default 20, max 100) and `job_name` (exact logical job key) are query params; the response carries `jobs`, `total`, `page`, `page_size`
 - `GET /api/projects/:id/job-names` — distinct logical job keys a project ran in the window, used to populate the filter dropdown (impossible to derive client-side once the list is paginated)
 - `GET /api/status/:jobName` — job/pod status (JSON). Served from the DB for completed jobs, otherwise from the K8s API. If the K8s Job no longer exists (TTL cleanup) the DB row is served instead, with `stuck: true` when the row never reached a terminal outcome — no more updates will ever arrive for it. Only when neither exists does it 400.
 - `POST /api/report/:jobName` — runners push status back to API server for persistence
@@ -168,7 +168,7 @@ The runner is told its full name via the `FULL_JOB_NAME` env var and reports to 
 
 ### Job Listings (pagination & filtering)
 
-`GET /api/projects/:id/jobs` and `GET /api/jobs/recent` are paginated (`page`, `page_size` ≤ `MaxPageSize`=100, default `DefaultPageSize`=20) and return `total` alongside the rows. Both used to return **every** row in the 7-day window — including the `status`/`notify`/`spec` text blobs — plus an extra query per row to preload pods, which is the expensive part at a few thousand rows.
+`GET /api/projects/:id/jobs` and `GET /api/jobs/recent` are paginated (`page_size` ≤ `MaxPageSize`=100, default `DefaultPageSize`=20; `page` ≤ `MaxPage`=1000 — beyond that the OFFSET only buys scanning, `(page-1)*pageSize` overflows, and nothing in the 7-day window lives that deep) and return `total` alongside the rows. Both used to return **every** row in the 7-day window — including the `status`/`notify`/`spec` text blobs — plus an extra query per row to preload pods, which is the expensive part at a few thousand rows.
 
 Consequences worth remembering:
 

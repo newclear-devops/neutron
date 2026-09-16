@@ -103,6 +103,9 @@ func parsePageParams(c *gin.Context) (page, pageSize int) {
 	if pageSize > internal.MaxPageSize {
 		pageSize = internal.MaxPageSize
 	}
+	if page > internal.MaxPage {
+		page = internal.MaxPage
+	}
 	return page, pageSize
 }
 

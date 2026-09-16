@@ -339,15 +339,19 @@
     var _recentTotal = 0;      // rows in the whole window, for the page count
     var _recentQuery = '';
     var _recentSearchTimer = null;
+    // Incremented per request: a slow reply for the previous page must not
+    // overwrite the list after a newer one already landed.
+    var _recentReqSeq = 0;
 
     function loadRecentJobs() {
+        var seq = ++_recentReqSeq;
         var url = '/api/jobs/recent?page=' + (_recentPage + 1) + '&page_size=' + RECENT_PAGE_SIZE +
             (_recentQuery ? '&q=' + encodeURIComponent(_recentQuery) : '');
         return fetch(url)
             .then(function(r) { return r.json(); })
             .then(function(data) {
                 var listEl = document.getElementById('recentJobsList');
-                if (!listEl) return; // navigated away while loading
+                if (!listEl || seq !== _recentReqSeq) return; // navigated away or superseded
                 if (data.error) {
                     listEl.innerHTML = '<p style="color:#c00">' + escHtml(data.error) + '</p>';
                     var pagEl = document.getElementById('recentPagination');
@@ -359,6 +363,7 @@
                 renderRecentJobsPage();
             })
             .catch(function(err) {
+                if (seq !== _recentReqSeq) return;
                 var el = document.getElementById('recentJobsList');
                 if (el) el.innerHTML = '<p style="color:#c00">Failed to load: ' + escHtml(String(err)) + '</p>';
             });
@@ -782,10 +787,13 @@
     var PROJECT_PAGE_SIZE = 20;
     // slug is kept alongside the paging state: the list rendering needs it to
     // strip the project segment off names that predate the job_name column.
-    var _projectState = { id: '', page: 0, jobName: '', slug: '', total: 0, jobs: [] };
+    // seq guards against out-of-order replies (fast paging / filter changes):
+    // only the newest request is allowed to update the list and the pager.
+    var _projectState = { id: '', page: 0, jobName: '', slug: '', total: 0, jobs: [], seq: 0 };
 
     function loadProjectJobs() {
         var s = _projectState;
+        var seq = ++s.seq;
         var url = '/api/projects/' + encodeURIComponent(s.id) + '/jobs?page=' + (s.page + 1) +
             '&page_size=' + PROJECT_PAGE_SIZE +
             (s.jobName ? '&job_name=' + encodeURIComponent(s.jobName) : '');
@@ -793,7 +801,7 @@
             .then(function(r) { return r.json(); })
             .then(function(data) {
                 var el = document.getElementById('jobsList');
-                if (!el) return; // navigated away while loading
+                if (!el || seq !== s.seq) return; // navigated away or superseded
                 if (data.error) {
                     el.innerHTML = '<p style="color:#c00">' + escHtml(data.error) + '</p>';
                     return;
@@ -803,6 +811,7 @@
                 renderProjectJobsList();
             })
             .catch(function(err) {
+                if (seq !== s.seq) return;
                 var el = document.getElementById('jobsList');
                 if (el) el.innerHTML = '<p style="color:#c00">Failed to load: ' + escHtml(String(err)) + '</p>';
             });
