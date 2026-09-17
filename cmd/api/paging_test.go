@@ -48,6 +48,30 @@ func TestParsePageParams(t *testing.T) {
 	}
 }
 
+// The project page's "Show all history" toggle is the only caller allowed to
+// lift the recency window; every other listing must keep the default.
+func TestJobWindowDays(t *testing.T) {
+	cases := []struct {
+		query string
+		want  int
+	}{
+		{query: "", want: defaultJobWindowDays},
+		{query: "page=2&job_name=build", want: defaultJobWindowDays},
+		{query: "all=1", want: 0},
+		// Only the documented value opts out; anything else keeps the window.
+		{query: "all=0", want: defaultJobWindowDays},
+		{query: "all=true", want: defaultJobWindowDays},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.query, func(t *testing.T) {
+			if got := jobWindowDays(newQueryContext(t, tc.query)); got != tc.want {
+				t.Errorf("jobWindowDays(%q) = %d, want %d", tc.query, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestParamsFromSpec(t *testing.T) {
 	spec := model.JobSpec{
 		JobName:     "build",

@@ -247,10 +247,11 @@ func jobTimestampExpr() string {
 const (
 	DefaultPageSize = 20
 	MaxPageSize     = 100
-	// MaxPage caps how deep a caller may page. Nothing inside the recency
-	// window lives past MaxPage*MaxPageSize rows, so an unlimited page would
-	// only let MySQL scan to the end of a table it will never reach — and at
-	// extreme values (page-1)*pageSize overflows into a negative OFFSET.
+	// MaxPage caps how deep a caller may page. The project page can lift its
+	// recency window (?all=1), so the reachable row count is no longer bounded
+	// by that window: the cap still stops an accidental or hostile deep page
+	// from scanning to the end of the table, and keeps (page-1)*pageSize from
+	// overflowing into a negative OFFSET.
 	MaxPage = 1000
 )
 
@@ -260,13 +261,17 @@ func recentWindow(days int) (string, string) {
 	return jobTimestampExpr() + " >= ?", cutoffDays(days)
 }
 
-// ListProjectJobsPaged returns one page of a project's recent jobs, newest
-// first, plus the total number of rows in the window so the caller can render
-// pagination. Filtering by the logical job key (JobName) is done here rather
-// than in the client because the client no longer holds every row.
+// ListProjectJobsPaged returns one page of a project's jobs, newest first, plus
+// the total number of rows so the caller can render pagination. days <= 0 lifts
+// the recency window and pages the full history (still bounded by the page
+// params). Filtering by the logical job key (JobName) is done here rather than
+// in the client because the client no longer holds every row.
 func (r *Repository) ListProjectJobsPaged(projectId, jobName string, days, pageSize, page int) ([]PipelineJob, int64, error) {
-	window, cutoff := recentWindow(days)
-	q := r.db.Where("project_id = ? AND "+window, projectId, cutoff)
+	q := r.db.Where("project_id = ?", projectId)
+	if days > 0 {
+		window, cutoff := recentWindow(days)
+		q = q.Where(window, cutoff)
+	}
 	if jobName != "" {
 		q = q.Where("job_name = ?", jobName)
 	}
@@ -281,15 +286,19 @@ func (r *Repository) ListProjectJobsPaged(projectId, jobName string, days, pageS
 	return jobs, total, err
 }
 
-// ListProjectJobNames returns the distinct logical job keys a project has run
-// inside the window, for populating the filter dropdown. Rows predating the
-// job_name column contribute nothing and are simply absent.
+// ListProjectJobNames returns the distinct logical job keys a project has run,
+// for populating the filter dropdown. days <= 0 covers the full history: the
+// DISTINCT is served by idx_job_project_name (project_id, job_name), so dropping
+// the recency window costs an index scan rather than a table scan. Rows
+// predating the job_name column contribute nothing and are simply absent.
 func (r *Repository) ListProjectJobNames(projectId string, days int) ([]string, error) {
-	window, cutoff := recentWindow(days)
+	q := r.db.Model(&PipelineJob{}).Where("project_id = ? AND job_name <> ''", projectId)
+	if days > 0 {
+		window, cutoff := recentWindow(days)
+		q = q.Where(window, cutoff)
+	}
 	var names []string
-	err := r.db.Model(&PipelineJob{}).
-		Where("project_id = ? AND job_name <> '' AND "+window, projectId, cutoff).
-		Distinct("job_name").Order("job_name").Pluck("job_name", &names).Error
+	err := q.Distinct("job_name").Order("job_name").Pluck("job_name", &names).Error
 	return names, err
 }
 
