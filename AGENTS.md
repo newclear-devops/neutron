@@ -20,7 +20,6 @@ go test ./...     # real tests exist: cmd/api (fake clientset) + internal/parser
 - **Three binaries**: `cmd/api` (API server + embedded SPA), `cmd/gitlab-runner`, `cmd/codeup-runner` (run inside K8s pods). Runners get all config via env vars set by the API server.
 - **The SPA is a single embedded file** (`cmd/api/static/index.html`, via go:embed). Frontend changes require rebuilding the API binary — no separate dev server.
 - **Stale docs — trust code/CLAUDE.md over these**:
-  - `README.md` DB schema lists `neutron_notify`/`neutron_ccwebhook` tables that no longer exist (notifications are per-job in `neutron.yaml`, persisted as JSON on `neutron_job.notify`).
   - `docs/testing.md` says the checkout container reuses the job image; it now uses the dedicated `neutron-checkout` image.
 - `config.yaml` is gitignored (shape: `internal/model/config.go`); most fields overridable via `NEUTRON_*` env vars.
 - **Job completion protocol**: runners report per-step status plus exactly one job-level final report (`final: true`); only the final report triggers completion notifications/`MarkJobCompleted`. A background reconciler (`cmd/api/reconcile.go`) closes out jobs whose pods died without a final report.

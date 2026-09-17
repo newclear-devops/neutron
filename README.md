@@ -260,21 +260,29 @@ Platform is auto-detected from webhook headers (`X-Codeup-Event` → Codeup, oth
 | GET | `/api/config` | Runtime config (log URL template, namespace, codebase URLs) |
 | POST | `/api/register` | Register a project, returns JSON with webhook URL |
 | POST | `/webhook/:id` | Receive webhook (GitLab/Codeup auto-detect), create K8s Jobs |
+| GET | `/api/projects` | List registered projects |
+| GET | `/api/projects/:id/jobs` | Project runs, paginated (`page`, `page_size`, `job_name`; `all=1` for the full history instead of the last 7 days) |
+| GET | `/api/projects/:id/job-names` | Distinct job keys of a project, for the filter dropdown (no time limit) |
+| GET | `/api/jobs/recent` | Recent runs across all projects, paginated (`q` free-text filter; last 7 days) |
 | GET | `/api/status/:jobName` | Job/pod status (JSON, from DB or K8s API). Includes `reportUrl` if set |
+| POST | `/api/report/:jobName` | Runner status push (internal) |
 | POST | `/api/report/:jobName/link` | Set a test report URL for a job (`{"report_url": "..."}`) |
+| POST | `/api/jobs/:jobName/rerun` | Rerun a job from its persisted spec |
+| POST | `/api/trigger` | Trigger a pipeline by repo URL / job / ref without a webhook |
+| GET/PUT | `/api/default-pipeline` | Read or update the global default pipeline |
 
 The frontend is a vanilla JS SPA served from `/` (hash-based routing: `#/`, `#/projects`, `#/project/:id`, `#/status/:jobName`). Pod names on the status page link to an external log platform if `log_url` is configured. When a test report URL is set via the API, a "查看测试报告" button appears on the job detail page.
 
 ## Database schema
 
-Tables (auto-migrated by GORM):
+Tables are auto-migrated by GORM on startup; `dds.sql` mirrors the same shape for a fresh environment.
 
 - **neutron_project** — registered projects (`id`, `webhook_type`, `repo_url`)
-- **neutron_job** — K8s job metadata (`id`, `project_id`, `name`, `status` as JSON, `completed`, `completed_at`)
+- **neutron_job** — one row per pipeline run (`id`, `project_id`, `name` = generated K8s Job name, `job_name` = logical job key from `neutron.yaml`, `status`/`notify`/`spec`/`params` as JSON, `completed`, `completed_at`)
 - **neutron_pod** — pod records per job (`id`, `job_id`, `pod_name`, `pod_uid`, `phase`)
-- **neutron_notify** — IM notification recipients per project (`id`, `project_id`, `user_id`)
-- **neutron_ccwebhook** — CCWork group webhook URLs per project (`id`, `project_id`, `webhook_url`, `description`)
 - **neutron_job_report** — test report link per job (`id`, `job_name`, `report_url`, `created_at`)
+- **neutron_snippet** — reusable shell snippets synced from GitLab (`id`, `name`, `title`, `content`, `description`, `params`, `created_at`, `updated_at`)
+- **neutron_setting** — global key/value config, e.g. the default pipeline (`key`, `value`, `updated_at`)
 
 ## Project structure
 

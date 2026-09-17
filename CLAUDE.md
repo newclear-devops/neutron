@@ -33,8 +33,8 @@ go test ./...
 - `POST /webhook/:id` — receives webhooks, auto-detects platform (GitLab/Codeup) via `X-Codeup-Event` header, fetches `neutron.yaml`, creates K8s Jobs. Query params on the webhook URL are passed as env vars to the pod.
 - `POST /api/trigger` — programmatic pipeline trigger by repo URL, job name, ref, and custom env vars (bypasses trigger type validation)
 - `GET /api/projects` — lists all registered projects
-- `GET /api/projects/:id/jobs` — lists jobs for a project (last 7 days), **paginated**: `page` (1-based, capped at 1000), `page_size` (default 20, max 100) and `job_name` (exact logical job key) are query params; the response carries `jobs`, `total`, `page`, `page_size`
-- `GET /api/projects/:id/job-names` — distinct logical job keys a project ran in the window, used to populate the filter dropdown (impossible to derive client-side once the list is paginated)
+- `GET /api/projects/:id/jobs` — lists a project's jobs, **paginated**: `page` (1-based, capped at 1000), `page_size` (default 20, max 100), `job_name` (exact logical job key) and `all` (`1` drops the 7-day recency window and pages the full history) are query params; the response carries `jobs`, `total`, `page`, `page_size`
+- `GET /api/projects/:id/job-names` — distinct logical job keys a project has ever run (**no** recency window, so a job idle for longer than the default window stays selectable), used to populate the filter dropdown (impossible to derive client-side once the list is paginated)
 - `GET /api/status/:jobName` — job/pod status (JSON). Served from the DB for completed jobs, otherwise from the K8s API. If the K8s Job no longer exists (TTL cleanup) the DB row is served instead, with `stuck: true` when the row never reached a terminal outcome — no more updates will ever arrive for it. Only when neither exists does it 400.
 - `POST /api/report/:jobName` — runners push status back to API server for persistence
 - `POST /api/report/:jobName/link` — set a test report URL for a job (`{"report_url": "..."}`)
@@ -158,7 +158,7 @@ Both added segments sit *before* / *after* carefully chosen positions: `<timesta
 
 - DB recency filters extract the timestamp via `jobTimestampExpr()` (`internal/repo.go`), which counts characters **from the end** and branches on the tail shape. Three layouts have shipped — with the compact timestamp, with the old `YYYYMMDD-HHMMSS` timestamp, and without a random suffix — and all three are normalized back to `YYYYMMDD-HHMMSS` so they compare correctly against `cutoffDays()`. Adding segments at the front is therefore safe and existing rows keep aging out.
 - The SPA parses the trailing timestamp for log-expiry/duration via `parseNameTimestamp`, which accepts both timestamp layouts.
-- `getJobLogicalName` strips `neutron-<project>-` before stripping the tail; it takes the project slug (mirroring the server's sanitizing rule — see `projectSlug` in the SPA) so a `<job>` key containing dashes is not mistaken for the project segment. Rows predating the project segment fall back to the old behaviour.
+- The SPA no longer reverse-engineers the logical key from the name: `getJobLogicalName`/`projectSlug` were deleted once `neutron_job.job_name` existed, because the project and job segments are both `[a-z0-9]` and either can be truncated — the parse could not tell `deploy-to-production-cluster` from its 20-char truncation. The project page lists the generated K8s name as-is and reads the logical key from that column (surfaced in the tooltip).
 
 The whole name is capped at **63 chars** (`jobNameMaxLength`), the K8s label value limit, so the `job-name` label derived from it stays complete. Fixed parts (`neutron` + 4 separators + 12-char timestamp + suffix) take 27 of them, leaving 36 for project+job — each segment is capped at 20, and when they do not both fit the project is trimmed and the job key stays whole.
 
@@ -168,13 +168,13 @@ The runner is told its full name via the `FULL_JOB_NAME` env var and reports to 
 
 ### Job Listings (pagination & filtering)
 
-`GET /api/projects/:id/jobs` and `GET /api/jobs/recent` are paginated (`page_size` ≤ `MaxPageSize`=100, default `DefaultPageSize`=20; `page` ≤ `MaxPage`=1000 — beyond that the OFFSET only buys scanning, `(page-1)*pageSize` overflows, and nothing in the 7-day window lives that deep) and return `total` alongside the rows. Both used to return **every** row in the 7-day window — including the `status`/`notify`/`spec` text blobs — plus an extra query per row to preload pods, which is the expensive part at a few thousand rows.
+`GET /api/projects/:id/jobs` and `GET /api/jobs/recent` are paginated (`page_size` ≤ `MaxPageSize`=100, default `DefaultPageSize`=20; `page` ≤ `MaxPage`=1000 — beyond that the OFFSET only buys scanning and `(page-1)*pageSize` overflows; the cap still matters now that `all=1` can ask for an unbounded history) and return `total` alongside the rows. Both used to return **every** row in the 7-day window — including the `status`/`notify`/`spec` text blobs — plus an extra query per row to preload pods, which is the expensive part at a few thousand rows.
 
 Consequences worth remembering:
 
-- **Filtering moved server-side.** The project page's job-name dropdown is built from `GET /api/projects/:id/job-names` (`SELECT DISTINCT job_name`) instead of from the loaded rows, and `job_name` is an exact-match query param.
+- **Filtering moved server-side.** The project page's job-name dropdown is built from `GET /api/projects/:id/job-names` (`SELECT DISTINCT job_name`, served by the `idx_job_project_name` index and deliberately unbounded) instead of from the loaded rows, and `job_name` is an exact-match query param. Since the dropdown covers the full history while the list defaults to 7 days, the page carries a `Show all history` toggle that re-requests with `all=1`; without it a job idle for longer than the window would be selectable but always render an empty list.
 - **The recent page's search box is server-side too** (`q`). Status words (`running`/`success`/`failed`/…) map onto the flags inside the status JSON; anything else matches the generated name, the job key, the status payload (which carries `repo_url`/`trigger_type`/`webhook_type`), or the owning project's `repo_url`.
-- `job_name` is empty on rows created before the column existed; such rows simply do not appear in the dropdown, and the UI falls back to parsing the generated name for display.
+- `job_name` is empty on rows created before the column existed; such rows do not appear in the dropdown. The live DB has been backfilled once (parse the K8s name: drop the `neutron-<project>-` prefix and the trailing `-<timestamp>[-<suffix>]`), but rows whose project segment had been trimmed by the length budget could only be recovered approximately. Display does not depend on the column either way — the list renders `name`.
 
 ### Trigger Details (ref / env)
 
