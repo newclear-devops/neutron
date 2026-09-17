@@ -57,6 +57,12 @@ func (s *Server) registerRoutes(r *gin.Engine) {
 	r.GET("/api/projects", s.handleListProjects)
 	r.GET("/api/projects/:id/jobs", s.handleListProjectJobs)
 	r.GET("/api/projects/:id/job-names", s.handleListProjectJobNames)
+	// Manual-trigger toolbar inputs: the project's branch/tag lists (through
+	// the codebase gateway) and the shared dependency branches.
+	r.GET("/api/projects/:id/branches", s.handleProjectBranches)
+	r.GET("/api/projects/:id/tags", s.handleProjectTags)
+	r.GET("/api/dependency/branches", s.handleDependencyBranches)
+	r.GET("/api/dependency/default", s.handleDependencyDefault)
 	r.GET("/api/jobs/recent", s.handleRecentJobs)
 	r.GET("/api/jobs/:jobName/running-siblings", s.handleRunningSiblings)
 	r.POST("/api/register", s.handleRegister)

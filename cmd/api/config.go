@@ -133,4 +133,10 @@ func applyEnvOverrides(config *model.Config) {
 	envStr("NEUTRON_SNIPPETS_REPO_URL", func(v string) { config.Snippets.RepoUrl = v })
 	envStr("NEUTRON_SNIPPETS_PLATFORM", func(v string) { config.Snippets.Platform = v })
 	envStr("NEUTRON_SNIPPETS_REF", func(v string) { config.Snippets.Ref = v })
+
+	// Manual-trigger toolbar backends (branch/tag list + dependency branch).
+	envStr("NEUTRON_GITREPO_GATEWAY_URL", func(v string) { config.Gateway.Url = v })
+	envTrue("NEUTRON_GITREPO_GATEWAY_SKIP_TLS_VERIFY", func() { config.Gateway.SkipTLSVerify = true })
+	envStr("NEUTRON_DEPENDENCY_URL", func(v string) { config.Dependency.Url = v })
+	envTrue("NEUTRON_DEPENDENCY_SKIP_TLS_VERIFY", func() { config.Dependency.SkipTLSVerify = true })
 }

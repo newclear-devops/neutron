@@ -87,7 +87,7 @@ Tables auto-migrated by GORM:
 
 ### Configuration
 
-Runtime config is `config.yaml` (gitignored). Shape defined by `internal/model/config.go`: host, port, database (MySQL DSN), salt, log_url (external log platform link template with {namespace} and {podName} placeholders, optional), codebase map (url/token/skip_tls_verify per platform: GitLab, Codeup), pod_codebase (pod-side codebase addresses, optional), kubernetes (kube-config path — optional for in-cluster, auto-detected via ServiceAccount; required for out-of-cluster, namespace, git-private-key secret, init-image, checkout-image, image-pull-secrets, **job-ttl-minutes** — see **Job Cleanup (TTL)**, pod-api-url), notify (IM notification config: url, corp_id, app_id, skip_tls_verify). Most fields can be overridden via environment variables (NEUTRON_*).
+Runtime config is `config.yaml` (gitignored). Shape defined by `internal/model/config.go`: host, port, database (MySQL DSN), salt, log_url (external log platform link template with {namespace} and {podName} placeholders, optional), codebase map (url/token/skip_tls_verify per platform: GitLab, Codeup), pod_codebase (pod-side codebase addresses, optional), kubernetes (kube-config path — optional for in-cluster, auto-detected via ServiceAccount; required for out-of-cluster, namespace, git-private-key secret, init-image, checkout-image, image-pull-secrets, **job-ttl-minutes** — see **Job Cleanup (TTL)**, pod-api-url), notify (IM notification config: url, corp_id, app_id, skip_tls_verify), snippets (GitLab-backed snippet store, optional), gateway (codebase API gateway backing the manual trigger toolbar's branch/tag lists, optional), dependency (shared-dependency service backing its DEP_BRANCH dropdown, optional). Most fields can be overridden via environment variables (NEUTRON_*).
 
 ### Job Cleanup (TTL)
 
@@ -222,6 +222,20 @@ Content-Type: application/json
 - `env` — optional key-value pairs injected as environment variables
 
 Works for both GitLab and Codeup platforms. The repo URL is converted to a platform-specific API path to fetch `neutron.yaml` at the given ref.
+
+### Manual Trigger Toolbar (UI)
+
+The project page (`#/project/:id`) carries a manual-trigger toolbar to the **right of the "Pipeline history" title**, so a run can be started from the browser instead of a webhook or a hand-rolled `/api/trigger` call. The repo URL is taken from the registered project; the toolbar only collects the remaining three inputs:
+
+| Field | Source |
+|-------|--------|
+| Ref (branches ⇄ tags) | `GET /api/projects/:id/{branches,tags}` — proxied from the codebase gateway |
+| Job name | `GET /api/projects/:id/job-names` (the same option set as the "All jobs" filter), still typeable for a job with no run history yet |
+| DEP_BRANCH | `GET /api/dependency/branches` + `/api/dependency/default` |
+
+The ref label is the toggle: it shows the branch list by default and switches to tags on click. Submitting POSTs `{repo_url, job_name, ref, env:{DEP_BRANCH}}` to the existing `/api/trigger`; `DEP_BRANCH` is omitted when the dropdown is empty.
+
+Both upstream services are optional (`gateway.url` / `dependency.url`, or `NEUTRON_GITREPO_GATEWAY_URL` / `NEUTRON_DEPENDENCY_URL`). The API server proxies them — the browser cannot reach them (different origin, internal network), so the SPA never calls the gateway directly. Handlers live in `cmd/api/gateway.go`; the gateway payload is decoded tolerantly (`parseRefItems` accepts a bare array and the `data`/`branches`/`tags` envelopes, with `name`/`branch`/`tag` spellings) because it fronts two platforms. An unconfigured or unreachable service degrades to an "Unavailable" dropdown instead of failing the page, and the project's ref lists are resolved server-side from the project id so the endpoint cannot be pointed at arbitrary repositories.
 
 ### Shell Snippets
 

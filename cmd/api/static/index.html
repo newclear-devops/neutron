@@ -109,6 +109,11 @@
         td a { font-weight: 600; }
 
         /* --- Form --- */
+        /* Form controls do not pick up the page font on their own: the browser's
+           own stylesheet sets a font directly on them, and a rule targeting the
+           element beats inheritance from body. Without this they fall back to
+           Arial even where the stack above would resolve to something else. */
+        input, select, textarea, button { font-family: inherit; }
         .form-wrap { max-width: 480px; }
         .form-wrap h3 { margin-bottom: 24px; }
         label { display: block; font-size: 1.3rem; font-weight: 600; color: #222; margin-bottom: 6px; margin-top: 16px; }
@@ -164,6 +169,46 @@
         .modal h4 { margin-bottom: 16px; font-size: 1.8rem; }
         .modal-input-row { display: flex; gap: 8px; margin-top: 16px; }
         .modal-input-row input { flex: 1; margin: 0; }
+
+        /* --- Manual trigger toolbar (project detail page) --- */
+        /* A boxed panel pinned to the right of the page header. The four controls
+           share one row — which keeps the panel about as tall as the title and
+           back link beside it — and the trigger result takes a second row of its
+           own only when there is something to report. */
+        .trigger-toolbar {
+            display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 12px 16px; align-items: end;
+            /* An explicit width rather than a flex basis: the panel renders
+               inside the header's #manualTriggerPanel wrapper, so the toolbar is
+               not itself a flex item of the header row and a flex basis would be
+               ignored — it would size to its content and push the row to wrap. */
+            width: 680px; max-width: 100%;
+            background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px;
+            padding: 14px 20px;
+        }
+        .trigger-toolbar .tt-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+        .trigger-toolbar .tt-label {
+            margin: 0; font-size: 1.1rem; font-weight: 600; color: #999;
+            text-transform: uppercase; letter-spacing: .4px; user-select: none; white-space: nowrap;
+        }
+        .trigger-toolbar .tt-label.tt-clickable { color: #9b4dca; cursor: pointer; }
+        .trigger-toolbar .tt-label.tt-clickable:hover { text-decoration: underline; }
+        .trigger-toolbar select, .trigger-toolbar input[type="text"] {
+            width: 100%; padding: 7px 10px; font-size: 1.3rem;
+        }
+        /* Trigger and the round hide button share the last column, so they stay
+           on one line however narrow that column gets. */
+        .trigger-toolbar .tt-actions { display: flex; align-items: center; gap: 8px; }
+        .trigger-toolbar .tt-submit { padding: 8px 18px; font-size: 1.3rem; margin-top: 0; white-space: nowrap; }
+        .trigger-toolbar .tt-collapse {
+            width: 24px; height: 24px; padding: 0; flex: none;
+            border: 1px solid #d1d5db; border-radius: 50%; background: #fff; color: #999;
+            font-size: 1.5rem; line-height: 1; cursor: pointer;
+            display: inline-flex; align-items: center; justify-content: center;
+        }
+        .trigger-toolbar .tt-collapse:hover { background: #f3f4f6; border-color: #9b4dca; color: #9b4dca; }
+        /* Feedback spans the panel and only exists once there is something to
+           say: while hidden it is not a grid item, so it adds no row. */
+        .trigger-toolbar .tt-result { grid-column: 1 / -1; font-size: 1.3rem; line-height: 1.4; }
 
         /* --- Responsive --- */
         @media (max-width: 640px) {
@@ -719,14 +764,27 @@
         // which never equals itself — the page would stay on "Loading..." with
         // every request succeeding.
         _projectState = { id: projectId, page: 0, jobName: '', allHistory: false, total: 0, jobs: [], seq: 0 };
+        _projectJobNames = [];
+        // expanded: the panel starts collapsed on every visit, so the page opens
+        // on a single button.
+        _manualTrigger = { projectId: projectId, repoUrl: '', refMode: 'branches', expanded: false };
         app.innerHTML =
-            '<p class="page-title">Pipeline history</p>' +
+            // Header: the title and the back link stack on the left, while the
+            // manual trigger panel takes the right-hand side beside them.
+            '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:24px;flex-wrap:wrap;margin-bottom:24px">' +
+                '<div>' +
+                    '<p class="page-title" style="margin-bottom:16px">Pipeline history</p>' +
+                    '<a href="#/projects" class="btn btn-outline" style="padding:6px 16px;font-size:1.3rem">← Back to Projects</a>' +
+                '</div>' +
+                '<div id="manualTriggerPanel">' + renderManualTriggerPanel() + '</div>' +
+            '</div>' +
+            '<div id="projectInfo"></div>' +
+            // Both controls scope the history list immediately below them, so
+            // they sit with the table rather than up next to the back link.
             '<div style="margin-bottom:16px;display:flex;gap:12px;align-items:center">' +
-                '<a href="#/projects" class="btn btn-outline" style="padding:6px 16px;font-size:1.3rem">← Back to Projects</a>' +
                 '<select id="jobNameFilter" style="max-width:200px;padding:6px 12px;font-size:1.3rem;border:1px solid #d1d5db;border-radius:4px;color:#606c76"><option value="">All jobs</option></select>' +
                 '<button id="historyToggle" class="btn btn-outline" style="padding:6px 16px;font-size:1.3rem;margin-top:0" onclick="projectJobsToggleHistory()">Show all history</button>' +
             '</div>' +
-            '<div id="projectInfo"></div>' +
             '<div id="jobsList"><p style="color:#999">Loading...</p></div>' +
             '<div id="projectPagination" style="text-align:center;margin-top:24px"></div>';
 
@@ -745,6 +803,7 @@
             // Display project info
             var infoEl = document.getElementById('projectInfo');
             if (project) {
+                _manualTrigger.repoUrl = project.RepoUrl;
                 var httpUrl = sshToHttp(project.RepoUrl, project.WebhookType);
                 var repoName = getRepoName(project.RepoUrl);
                 var repoHtml = httpUrl
@@ -775,6 +834,13 @@
                 _projectState.page = 0;
                 loadProjectJobs();
             });
+            // The manual trigger panel offers the same job names as the filter,
+            // and stays typeable so a job that has never run (say one just added
+            // to neutron.yaml) can still be triggered. This fetch may land
+            // before or after the panel is expanded — fillManualTriggerJobs
+            // covers both orders.
+            _projectJobNames = names;
+            fillManualTriggerJobs();
 
             loadProjectJobs();
         }).catch(function(err) {
@@ -787,6 +853,10 @@
     // seq guards against out-of-order replies (fast paging / filter changes):
     // only the newest request is allowed to update the list and the pager.
     var _projectState = { id: '', page: 0, jobName: '', allHistory: false, total: 0, jobs: [], seq: 0 };
+
+    // Job keys of the current project, from /api/projects/:id/job-names. Shared
+    // by the history filter dropdown and the manual trigger panel's job field.
+    var _projectJobNames = [];
 
     function loadProjectJobs() {
         var s = _projectState;
@@ -917,6 +987,234 @@
         }
         if (pagEl) pagEl.innerHTML = pagHtml;
     }
+
+    // --- Manual trigger (project detail page) ---
+    // Lets a run be started from the browser, which previously required a
+    // webhook or a call to the trigger API. The repo URL comes from the
+    // registered project, so the user only picks a ref, a job name and a
+    // dependency branch. The ref lists come from the codebase gateway and the
+    // dependency branch from the dependency service, both proxied by the API
+    // server (the browser cannot reach them directly).
+    var _manualTrigger = { projectId: '', repoUrl: '', refMode: 'branches' };
+
+    function renderManualTriggerToolbar() {
+        // Grid order: Ref | Job | DEP_BRANCH | Trigger on one row, with the
+        // result spanning the panel underneath once there is one.
+        return '<div class="trigger-toolbar" id="manualTriggerToolbar">' +
+            '<div class="tt-field">' +
+                '<label class="tt-label tt-clickable" onclick="manualTriggerToggleRef()" title="Click to switch between the branch list and the tag list">Ref · <span id="ttRefMode">Branches</span> ⇄</label>' +
+                '<select id="ttRef"><option value="">Loading...</option></select>' +
+            '</div>' +
+            '<div class="tt-field">' +
+                '<label class="tt-label" for="ttJob">Job</label>' +
+                '<input type="text" id="ttJob" list="ttJobList" placeholder="job name" autocomplete="off">' +
+                '<datalist id="ttJobList"></datalist>' +
+            '</div>' +
+            '<div class="tt-field">' +
+                '<label class="tt-label" for="ttDepBranch">DEP_BRANCH</label>' +
+                '<select id="ttDepBranch"><option value="">Loading...</option></select>' +
+            '</div>' +
+            '<div class="tt-actions">' +
+                '<button class="btn btn-outline tt-submit" id="ttSubmit" onclick="manualTriggerSubmit()">Trigger</button>' +
+                '<button class="tt-collapse" type="button" title="Hide the manual trigger panel" onclick="manualTriggerToggle()">&times;</button>' +
+            '</div>' +
+            '<span id="manualTriggerResult" class="tt-result" style="display:none"></span>' +
+        '</div>';
+    }
+
+    // The panel is collapsed by default, so the project page opens on a single
+    // button rather than a form nobody asked for. Which of the two is rendered
+    // is the only difference between the two states.
+    function renderManualTriggerPanel() {
+        if (_manualTrigger.expanded) return renderManualTriggerToolbar();
+        return '<button class="btn btn-outline" id="ttExpand" type="button"' +
+            ' style="padding:8px 18px;font-size:1.3rem;margin-top:0"' +
+            ' onclick="manualTriggerToggle()">Manual Trigger</button>';
+    }
+
+    function manualTriggerToggle() {
+        _manualTrigger.expanded = !_manualTrigger.expanded;
+        var panel = document.getElementById('manualTriggerPanel');
+        if (!panel) return;
+        panel.innerHTML = renderManualTriggerPanel();
+        if (!_manualTrigger.expanded) return;
+        // Everything the panel needs is fetched on first expansion — the page
+        // itself never asks the gateway or the dependency service for anything
+        // unless this panel is opened.
+        fillManualTriggerJobs();
+        loadManualTriggerRefs();
+        loadManualTriggerDependency();
+    }
+    window.manualTriggerToggle = manualTriggerToggle;
+
+    // The job field's candidates come from the project's job history, which the
+    // page fetches independently of the panel (and possibly before it is
+    // opened), so they are held here and copied in whenever the panel renders.
+    function fillManualTriggerJobs() {
+        var jobList = document.getElementById('ttJobList');
+        if (!jobList) return; // panel still collapsed
+        jobList.innerHTML = '';
+        for (var i = 0; i < _projectJobNames.length; i++) {
+            var opt = document.createElement('option');
+            opt.value = _projectJobNames[i];
+            jobList.appendChild(opt);
+        }
+    }
+
+    function loadManualTriggerRefs() {
+        var sel = document.getElementById('ttRef');
+        if (!sel) return;
+        var mode = _manualTrigger.refMode;
+        sel.innerHTML = '<option value="">Loading...</option>';
+        fetchWithTimeout('/api/projects/' + encodeURIComponent(_manualTrigger.projectId) + '/' + mode)
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (!document.body.contains(sel)) return; // navigated away
+                if (data.error) throw new Error(data.error);
+                var items = data[mode] || [];
+                if (items.length === 0) {
+                    sel.innerHTML = '<option value="">No ' + escHtml(mode) + '</option>';
+                    return;
+                }
+                // Branches list the repository default first: it is what most
+                // manual runs want, and a plain alphabetical list buries it.
+                if (mode === 'branches') {
+                    items = items.slice().sort(function(a, b) {
+                        return (b.default ? 1 : 0) - (a.default ? 1 : 0);
+                    });
+                }
+                var html = '';
+                for (var i = 0; i < items.length; i++) {
+                    var text = items[i].name + (items[i].default ? '  (default)' : '');
+                    html += '<option value="' + escAttr(items[i].name) + '">' + escHtml(text) + '</option>';
+                }
+                sel.innerHTML = html;
+            })
+            .catch(function(err) {
+                if (!document.body.contains(sel)) return;
+                sel.innerHTML = '<option value="">Unavailable</option>';
+                // The select is far too narrow for the reason (usually an
+                // unconfigured gateway), so keep it in the tooltip.
+                sel.title = (err && err.message) ? err.message : String(err);
+                console.warn('manual trigger: ' + mode + ' list failed: ' + err);
+            });
+    }
+
+    function loadManualTriggerDependency() {
+        var sel = document.getElementById('ttDepBranch');
+        if (!sel) return;
+        sel.innerHTML = '<option value="">Loading...</option>';
+        fetchWithTimeout('/api/dependency/branches')
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (!document.body.contains(sel)) return;
+                if (data.error) throw new Error(data.error);
+                var branches = data.branches || [];
+                if (branches.length === 0) {
+                    sel.innerHTML = '<option value="">Unavailable</option>';
+                    return;
+                }
+                var html = '';
+                for (var i = 0; i < branches.length; i++) {
+                    html += '<option value="' + escAttr(branches[i]) + '">' + escHtml(branches[i]) + '</option>';
+                }
+                sel.innerHTML = html;
+                // Preselect the service's current default, if it names one of
+                // the branches just listed. Assigning an absent value would
+                // blank the select, so the options are matched explicitly.
+                fetchWithTimeout('/api/dependency/default')
+                    .then(function(r) { return r.json(); })
+                    .then(function(def) {
+                        if (!document.body.contains(sel)) return;
+                        if (!def || !def.branch) return;
+                        for (var k = 0; k < sel.options.length; k++) {
+                            if (sel.options[k].value === def.branch) { sel.selectedIndex = k; break; }
+                        }
+                    })
+                    .catch(function() { /* keep the first option */ });
+            })
+            .catch(function(err) {
+                if (!document.body.contains(sel)) return;
+                sel.innerHTML = '<option value="">Unavailable</option>';
+                sel.title = (err && err.message) ? err.message : String(err);
+                console.warn('manual trigger: dependency branches failed: ' + err);
+            });
+    }
+
+    function manualTriggerToggleRef() {
+        _manualTrigger.refMode = _manualTrigger.refMode === 'branches' ? 'tags' : 'branches';
+        var modeEl = document.getElementById('ttRefMode');
+        if (modeEl) modeEl.textContent = _manualTrigger.refMode === 'branches' ? 'Branches' : 'Tags';
+        loadManualTriggerRefs();
+    }
+    window.manualTriggerToggleRef = manualTriggerToggleRef;
+
+    // Renders the toolbar's inline feedback, right after the trigger button.
+    // A successful trigger links straight to the new run's status page. An empty
+    // message collapses the element, so idle it takes no room in the toolbar.
+    function manualTriggerResult(message, isError, jobName) {
+        var el = document.getElementById('manualTriggerResult');
+        if (!el) return;
+        if (!message) {
+            el.innerHTML = '';
+            el.style.display = 'none';
+            return;
+        }
+        var html = '<span style="color:' + (isError ? '#c00' : '#16a34a') + '">' + escHtml(message) + '</span>';
+        if (jobName) {
+            html += ' <a href="#/status/' + escAttr(jobName) + '">View run &rarr;</a>';
+        }
+        el.innerHTML = html;
+        // Toggled explicitly rather than cleared: while hidden the element is
+        // not a grid item at all, so it contributes no empty row to the panel.
+        el.style.display = 'block';
+    }
+
+    function manualTriggerSubmit() {
+        var refEl = document.getElementById('ttRef');
+        var jobEl = document.getElementById('ttJob');
+        var depEl = document.getElementById('ttDepBranch');
+        var btn = document.getElementById('ttSubmit');
+
+        var ref = refEl ? refEl.value : '';
+        var jobName = jobEl ? jobEl.value.trim() : '';
+        var depBranch = depEl ? depEl.value : '';
+
+        if (!_manualTrigger.repoUrl) { manualTriggerResult('Project not found.', true); return; }
+        if (!ref) { manualTriggerResult('Select a branch or tag first.', true); return; }
+        if (!jobName) { manualTriggerResult('Select or type a job name first.', true); return; }
+
+        var payload = { repo_url: _manualTrigger.repoUrl, job_name: jobName, ref: ref, env: {} };
+        if (depBranch) payload.env.DEP_BRANCH = depBranch;
+
+        if (btn) { btn.disabled = true; btn.textContent = 'Triggering...'; }
+        manualTriggerResult('', false);
+        fetch('/api/trigger', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        })
+            .then(function(r) {
+                return r.text().then(function(text) { return { ok: r.ok, status: r.status, text: text }; });
+            })
+            .then(function(res) {
+                var data = null;
+                try { data = JSON.parse(res.text); } catch (e) {}
+                if (!res.ok) {
+                    manualTriggerResult((data && data.error) || res.text || ('HTTP ' + res.status), true);
+                    return;
+                }
+                manualTriggerResult('Pipeline triggered.', false, (data && data.job_name) || '');
+                loadProjectJobs();
+            })
+            .catch(function(err) {
+                manualTriggerResult('Trigger failed: ' + err, true);
+            })
+            .then(function() {
+                if (btn) { btn.disabled = false; btn.textContent = 'Trigger'; }
+            });
+    }
+    window.manualTriggerSubmit = manualTriggerSubmit;
 
     // --- Home ---
     function renderHome() {
@@ -1285,7 +1583,36 @@
                 '<p style="font-size:1.3rem;font-weight:600;color:#606c76;margin:14px 0 4px">Environment</p>' +
                 '<table style="font-size:1.3rem"><tbody>' + envHtml + '</tbody></table>'
                 : '') +
+            // Sits beside the run's own DEP_BRANCH so the two can be compared:
+            // this is the dependency service's current default — what a new run
+            // would pick up — and an env var of the same name wins over it.
+            // Filled in by loadDefaultDependency() after the card is in the DOM.
+            '<p style="font-size:1.3rem;font-weight:600;color:#606c76;margin:14px 0 4px">Default Dependency ' +
+                '<span style="font-weight:400;color:#999">(will override by Environment)</span></p>' +
+            '<p style="font-size:1.3rem;font-family:monospace;color:#999" id="defaultDependency">&hellip;</p>' +
             '</div>';
+    }
+
+    // Fills the "Default Dependency" value from the dependency service. It
+    // cannot be rendered inline with the rest of the card because it is the only
+    // value there that has to be fetched rather than read off the run's params.
+    function loadDefaultDependency() {
+        var cell = document.getElementById('defaultDependency');
+        if (!cell) return;
+        fetchWithTimeout('/api/dependency/default')
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (!document.body.contains(cell)) return; // navigated away
+                if (data && data.error) throw new Error(data.error);
+                var branch = (data && data.branch) || '';
+                cell.innerHTML = branch ? escHtml(branch) : '-';
+                cell.style.color = branch ? '#606c76' : '#999';
+            })
+            .catch(function(err) {
+                if (!document.body.contains(cell)) return;
+                cell.innerHTML = '-';
+                cell.title = (err && err.message) ? err.message : String(err);
+            });
     }
 
     function renderStatusLive(job, podsData, dbStatus, reportUrl, rerunnable, projectId, stuck, jobKey, params) {
@@ -1345,6 +1672,10 @@
                     : '') +
             '</div>' +
             renderTriggerDetails(jobKey, params);
+
+        // The Default Dependency row shows a live value from the dependency
+        // service, so it is filled in once the card is in the DOM.
+        loadDefaultDependency();
     }
 
     function rerunJob(jobName) {

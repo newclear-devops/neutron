@@ -49,6 +49,13 @@ stringData:
       # Codeup:
       #   url: "http://codeup.example.com"
       #   token: "your-codeup-token"
+    # Optional: inputs for the manual trigger toolbar on the project page.
+    # gateway serves the branch/tag lists (unified GitLab + Codeup API),
+    # dependency serves the DEP_BRANCH dropdown.
+    # gateway:
+    #   url: "http://codebase-gateway.default.svc.cluster.local"
+    # dependency:
+    #   url: "http://dependency.default.svc.cluster.local"
     kubernetes:
       namespace: "default"
       git-private-key: "git-ssh-secret"

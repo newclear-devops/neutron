@@ -70,6 +70,16 @@ codebase:
 #     url: "http://gitlab.default.svc.cluster.local"
 #     token: "your-gitlab-private-token"
 
+# Optional: inputs for the manual trigger toolbar on the project page.
+# `gateway` is the codebase API gateway that unifies GitLab and Codeup and
+# serves the branch/tag lists; `dependency` serves the DEP_BRANCH dropdown.
+# Omit either one and its dropdown simply shows "Unavailable".
+# gateway:
+#   url: "http://codebase-gateway.example.com"
+# dependency:
+#   url: "http://dependency.example.com"
+#   skip_tls_verify: false
+
 kubernetes:
   kube-config: "/path/to/.kube/config"  # optional when deploying in-cluster (auto-detected via ServiceAccount)
   namespace: "default"
@@ -263,6 +273,10 @@ Platform is auto-detected from webhook headers (`X-Codeup-Event` → Codeup, oth
 | GET | `/api/projects` | List registered projects |
 | GET | `/api/projects/:id/jobs` | Project runs, paginated (`page`, `page_size`, `job_name`; `all=1` for the full history instead of the last 7 days) |
 | GET | `/api/projects/:id/job-names` | Distinct job keys of a project, for the filter dropdown (no time limit) |
+| GET | `/api/projects/:id/branches` | Project's branches, via the codebase gateway (manual trigger toolbar) |
+| GET | `/api/projects/:id/tags` | Project's tags, via the codebase gateway (manual trigger toolbar) |
+| GET | `/api/dependency/branches` | Shared dependency branches, for the `DEP_BRANCH` dropdown |
+| GET | `/api/dependency/default` | Dependency service's current default branch |
 | GET | `/api/jobs/recent` | Recent runs across all projects, paginated (`q` free-text filter; last 7 days) |
 | GET | `/api/status/:jobName` | Job/pod status (JSON, from DB or K8s API). Includes `reportUrl` if set |
 | POST | `/api/report/:jobName` | Runner status push (internal) |
