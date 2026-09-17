@@ -718,12 +718,13 @@
         // render guard compares seq against the state, and ++undefined is NaN,
         // which never equals itself — the page would stay on "Loading..." with
         // every request succeeding.
-        _projectState = { id: projectId, page: 0, jobName: '', total: 0, jobs: [], seq: 0 };
+        _projectState = { id: projectId, page: 0, jobName: '', allHistory: false, total: 0, jobs: [], seq: 0 };
         app.innerHTML =
             '<p class="page-title">Pipeline history</p>' +
             '<div style="margin-bottom:16px;display:flex;gap:12px;align-items:center">' +
                 '<a href="#/projects" class="btn btn-outline" style="padding:6px 16px;font-size:1.3rem">← Back to Projects</a>' +
                 '<select id="jobNameFilter" style="max-width:200px;padding:6px 12px;font-size:1.3rem;border:1px solid #d1d5db;border-radius:4px;color:#606c76"><option value="">All jobs</option></select>' +
+                '<button id="historyToggle" class="btn btn-outline" style="padding:6px 16px;font-size:1.3rem;margin-top:0" onclick="projectJobsToggleHistory()">Show all history</button>' +
             '</div>' +
             '<div id="projectInfo"></div>' +
             '<div id="jobsList"><p style="color:#999">Loading...</p></div>' +
@@ -785,13 +786,14 @@
     var PROJECT_PAGE_SIZE = 20;
     // seq guards against out-of-order replies (fast paging / filter changes):
     // only the newest request is allowed to update the list and the pager.
-    var _projectState = { id: '', page: 0, jobName: '', total: 0, jobs: [], seq: 0 };
+    var _projectState = { id: '', page: 0, jobName: '', allHistory: false, total: 0, jobs: [], seq: 0 };
 
     function loadProjectJobs() {
         var s = _projectState;
         var seq = ++s.seq;
         var url = '/api/projects/' + encodeURIComponent(s.id) + '/jobs?page=' + (s.page + 1) +
             '&page_size=' + PROJECT_PAGE_SIZE +
+            (s.allHistory ? '&all=1' : '') +
             (s.jobName ? '&job_name=' + encodeURIComponent(s.jobName) : '');
         return fetchWithTimeout(url)
             .then(function(r) { return r.json(); })
@@ -822,12 +824,31 @@
     }
     window.projectJobsGoToPage = projectJobsGoToPage;
 
+    // Toggles the recency window on the project job list. The filter dropdown
+    // always lists every job key the project has ever run, so without this a job
+    // that has been idle for more than the default window would be selectable
+    // but always render an empty list.
+    function projectJobsToggleHistory() {
+        var s = _projectState;
+        s.allHistory = !s.allHistory;
+        s.page = 0;
+        var btn = document.getElementById('historyToggle');
+        if (btn) btn.textContent = s.allHistory ? 'Show last 7 days' : 'Show all history';
+        loadProjectJobs();
+    }
+    window.projectJobsToggleHistory = projectJobsToggleHistory;
+
     function renderProjectJobsList() {
         var s = _projectState;
         var el = document.getElementById('jobsList');
         var pagEl = document.getElementById('projectPagination');
         if (!s.jobs || s.jobs.length === 0) {
-            el.innerHTML = '<p style="color:#999">No pipeline runs in the last 7 days.</p>';
+            // The hint only makes sense inside the default window: in full-history
+            // mode the list is already showing everything the toggle can reach.
+            el.innerHTML = s.allHistory
+                ? '<p style="color:#999;font-size:1.6rem">No pipeline runs found.</p>'
+                : '<p style="color:#999;font-size:1.6rem">No pipeline runs in the last 7 days.</p>' +
+                  '<p style="color:#999;font-size:1.4rem;margin-top:4px">Use <b>Show all history</b> to search the full history.</p>';
             if (pagEl) pagEl.innerHTML = '';
             return;
         }

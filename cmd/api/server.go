@@ -109,10 +109,25 @@ func parsePageParams(c *gin.Context) (page, pageSize int) {
 	return page, pageSize
 }
 
+// defaultJobWindowDays is the recency window every job listing falls back to.
+// The project page can bypass it with ?all=1 to page through the full history;
+// see jobWindowDays.
+const defaultJobWindowDays = 7
+
+// jobWindowDays reports how far back the project job list should look: the
+// default window, or 0 (no limit) when the caller asked for the full history.
+// 0 is what the repository helpers read as "drop the recency window".
+func jobWindowDays(c *gin.Context) int {
+	if c.Query("all") == "1" {
+		return 0
+	}
+	return defaultJobWindowDays
+}
+
 func (s *Server) handleListProjectJobs(c *gin.Context) {
 	id := c.Param("id")
 	page, pageSize := parsePageParams(c)
-	jobs, total, err := s.repo.ListProjectJobsPaged(id, c.Query("job_name"), 7, pageSize, page)
+	jobs, total, err := s.repo.ListProjectJobsPaged(id, c.Query("job_name"), jobWindowDays(c), pageSize, page)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -127,9 +142,11 @@ func (s *Server) handleListProjectJobs(c *gin.Context) {
 
 // handleListProjectJobNames feeds the job-name filter on the project page. It is
 // a separate endpoint because the dropdown used to be built client-side from
-// every row — impossible once the list is paginated.
+// every row — impossible once the list is paginated. The lookup is deliberately
+// unbounded (days=0) so a job that has not run inside the default window is
+// still selectable.
 func (s *Server) handleListProjectJobNames(c *gin.Context) {
-	names, err := s.repo.ListProjectJobNames(c.Param("id"), 7)
+	names, err := s.repo.ListProjectJobNames(c.Param("id"), 0)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -139,7 +156,7 @@ func (s *Server) handleListProjectJobNames(c *gin.Context) {
 
 func (s *Server) handleRecentJobs(c *gin.Context) {
 	page, pageSize := parsePageParams(c)
-	jobs, total, err := s.repo.ListRecentJobsPaged(c.Query("q"), 7, pageSize, page)
+	jobs, total, err := s.repo.ListRecentJobsPaged(c.Query("q"), defaultJobWindowDays, pageSize, page)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -172,7 +189,7 @@ func (s *Server) handleRunningSiblings(c *gin.Context) {
 		}
 		return
 	}
-	siblings, err := s.repo.ListRunningJobs(projectId, jobName, 7)
+	siblings, err := s.repo.ListRunningJobs(projectId, jobName, defaultJobWindowDays)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
