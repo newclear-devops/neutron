@@ -13,6 +13,8 @@ type Config struct {
 	Kubernetes  KubernetesConfig    `yaml:"kubernetes"`
 	Notify      NotifyConfig        `yaml:"notify,omitempty"`
 	Snippets    SnippetsConfig      `yaml:"snippets,omitempty"`
+	Gateway     GatewayConfig       `yaml:"gateway,omitempty"`
+	Dependency  DependencyConfig    `yaml:"dependency,omitempty"`
 }
 
 type NotifyConfig struct {
@@ -85,4 +87,23 @@ type CodeBase struct {
 	Token          string `yaml:"token"`
 	SkipTLSVerify  bool   `yaml:"skip_tls_verify,omitempty"`
 	WebhookUrl     string `yaml:"webhook_url,omitempty"` // 外部可访问的 webhook URL（覆盖 config.Host）
+}
+
+// GatewayConfig points at the codebase API gateway that fronts both GitLab and
+// Codeup. The manual-trigger toolbar reads a project's branch and tag lists
+// through it (GET {gateway.url}/api/v1/projects/{ssh_url}/repository/{branches,tags}).
+// Optional: when unset, the toolbar reports the gateway as unavailable and the
+// ref has to be supplied through the trigger API instead.
+type GatewayConfig struct {
+	Url           string `yaml:"url"`
+	SkipTLSVerify bool   `yaml:"skip_tls_verify,omitempty"`
+}
+
+// DependencyConfig points at the shared-dependency service that backs the
+// DEP_BRANCH value of a manually triggered run. Its branch list comes from
+// {dependency.url}/api/v1/branches and the default from {dependency.url}/property.
+// Optional: when unset, the toolbar sends no DEP_BRANCH.
+type DependencyConfig struct {
+	Url           string `yaml:"url"`
+	SkipTLSVerify bool   `yaml:"skip_tls_verify,omitempty"`
 }
