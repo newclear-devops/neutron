@@ -340,7 +340,7 @@ func TestProjectRefsNotConfigured(t *testing.T) {
 		if w.Code != http.StatusBadRequest {
 			t.Errorf("%s status = %d, want 400", target, w.Code)
 		}
-		if !strings.Contains(w.Body.String(), "NEUTRON_GATEWAY_URL") {
+		if !strings.Contains(w.Body.String(), "NEUTRON_GITREPO_GATEWAY_URL") {
 			t.Errorf("%s body = %s, want it to name the env var to set", target, w.Body.String())
 		}
 	}

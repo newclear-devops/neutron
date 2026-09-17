@@ -81,7 +81,7 @@ func (s *Server) handleProjectTags(c *gin.Context) {
 // from turning Neutron into a pass-through for arbitrary repositories.
 func (s *Server) handleProjectRefs(c *gin.Context, kind string) {
 	if s.config.Gateway.Url == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "codebase gateway is not configured (set gateway.url or NEUTRON_GATEWAY_URL)"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "codebase gateway is not configured (set gateway.url or NEUTRON_GITREPO_GATEWAY_URL)"})
 		return
 	}
 	project := s.repo.GetWebhookConfig(c.Param("id"))
