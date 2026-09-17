@@ -713,38 +713,12 @@
 
     // --- Project Jobs ---
 
-    // Mirrors launcher.projectNamePart(): lowercase, keep only letters and
-    // digits, cap at 20 chars. Keeping the two in sync is what makes it possible
-    // to strip the project segment back off a generated job name.
-    function projectSlug(repoUrl) {
-        return String(getRepoName(repoUrl) || '').toLowerCase().replace(/[^a-z0-9]/g, '').substring(0, 20);
-    }
-
-    // Job name format: neutron-[{project}-]{jobName}-{timestamp}[-{4-char random suffix}]
-    // The project segment, the compact YYMMDDHHMMSS timestamp and the random
-    // suffix were each added later, so older rows must still parse.
-    function getJobLogicalName(fullName, slug) {
-        var name = fullName || '';
-        var prefix = 'neutron-';
-        // Only an exact match counts: guessing shorter prefixes could strip a
-        // leading piece off an old-style job key that happens to share a few
-        // characters with the project name. Rows whose name exceeded the length
-        // budget (very long project + very long job key, where the project gets
-        // trimmed server-side) fall through and keep their project segment here
-        // — cosmetic only, every row of a project gets the same treatment.
-        if (slug) {
-            var withProject = prefix + slug + '-';
-            if (name.indexOf(withProject) === 0) { prefix = withProject; }
-        }
-        return name.slice(prefix.length).replace(/-(\d{12}|\d{8}-\d{6})(?:-[0-9a-f]{4})?$/, '');
-    }
-
     function renderProjectJobs(projectId) {
         // Must carry every field declared in the initial value below: the
         // render guard compares seq against the state, and ++undefined is NaN,
         // which never equals itself — the page would stay on "Loading..." with
         // every request succeeding.
-        _projectState = { id: projectId, page: 0, jobName: '', slug: '', total: 0, jobs: [], seq: 0 };
+        _projectState = { id: projectId, page: 0, jobName: '', total: 0, jobs: [], seq: 0 };
         app.innerHTML =
             '<p class="page-title">Pipeline history</p>' +
             '<div style="margin-bottom:16px;display:flex;gap:12px;align-items:center">' +
@@ -786,10 +760,6 @@
                         '</div>';
             }
 
-            // Needed to parse job keys out of names written before the job_name
-            // column existed but after the project segment was added to them.
-            _projectState.slug = project ? projectSlug(project.RepoUrl) : '';
-
             var namesData = results[1];
             var filterSelect = document.getElementById('jobNameFilter');
             var names = (namesData && namesData.job_names) || [];
@@ -813,11 +783,9 @@
 
     // --- Project jobs: server-side paging ---
     var PROJECT_PAGE_SIZE = 20;
-    // slug is kept alongside the paging state: the list rendering needs it to
-    // strip the project segment off names that predate the job_name column.
     // seq guards against out-of-order replies (fast paging / filter changes):
     // only the newest request is allowed to update the list and the pager.
-    var _projectState = { id: '', page: 0, jobName: '', slug: '', total: 0, jobs: [], seq: 0 };
+    var _projectState = { id: '', page: 0, jobName: '', total: 0, jobs: [], seq: 0 };
 
     function loadProjectJobs() {
         var s = _projectState;
@@ -898,12 +866,14 @@
                     durationHtml = '<span style="color:#2563eb">' + durationHtml + '</span>';
                 }
             }
-            // Prefer the stored job key. Rows without it fall back to parsing
-            // the generated name, which needs the project slug: rows created
-            // after the project segment was added to the name but before the
-            // job_name column existed still carry it (neutron-<project>-<job>-…).
-            var label = job.JobName || getJobLogicalName(job.Name, s.slug);
-            html += '<tr><td><a href="#/status/' + escAttr(job.Name) + '" title="' + escAttr(job.Name) + '">' + escHtml(label) + '</a></td><td>' + statusHtml + '</td><td>' + escHtml(status.trigger_type || '-') + '</td><td style="font-size:1.3rem;color:#606c76">' + durationHtml + '</td><td><a href="#/status/' + escAttr(job.Name) + '" class="btn btn-outline" style="padding:4px 12px;font-size:1.2rem">Detail</a></td></tr>';
+            // Show the generated K8s Job name rather than the logical job key:
+            // one project runs the same logical job many times, and only the
+            // full name tells those runs apart. It is also what the status page
+            // and `kubectl get jobs` are keyed by. The logical key from
+            // neutron.yaml, when the row carries one, goes in the tooltip.
+            var jobLabel = job.Name || '';
+            var jobTitle = job.JobName ? job.JobName + ' \u00b7 ' + job.Name : job.Name;
+            html += '<tr><td><a href="#/status/' + escAttr(job.Name) + '" title="' + escAttr(jobTitle) + '">' + escHtml(jobLabel) + '</a></td><td>' + statusHtml + '</td><td>' + escHtml(status.trigger_type || '-') + '</td><td style="font-size:1.3rem;color:#606c76">' + durationHtml + '</td><td><a href="#/status/' + escAttr(job.Name) + '" class="btn btn-outline" style="padding:4px 12px;font-size:1.2rem">Detail</a></td></tr>';
         }
         html += '</tbody></table>';
         el.innerHTML = html;
