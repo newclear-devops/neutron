@@ -7,7 +7,13 @@
     <link rel="icon" type="image/svg+xml" href="/static/logo.svg">
     <style>
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-        html { font-size: 10px; }
+        /* The page is hard-coded light (white background, dark text) but native
+           widgets follow the browser's own colour scheme. Without this, a
+           browser in dark mode draws form-control popups dark - most visibly the
+           datalist suggestion list, which the browser renders itself and cannot
+           be styled from here - while select popups stay white, because those do
+           take the element's own background. */
+        html { font-size: 10px; color-scheme: light; }
         body {
             font-family: "Helvetica Neue", Helvetica, Arial, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
             font-size: 1.6rem;
@@ -192,9 +198,46 @@
         }
         .trigger-toolbar .tt-label.tt-clickable { color: #9b4dca; cursor: pointer; }
         .trigger-toolbar .tt-label.tt-clickable:hover { text-decoration: underline; }
-        .trigger-toolbar select, .trigger-toolbar input[type="text"] {
-            width: 100%; padding: 7px 10px; font-size: 1.3rem;
+        /* All three fields use the same own-drawn dropdown. The native widgets
+           they replace each draw their own popup, in a style the page cannot
+           reach: a select popup takes the element's colours, while the datalist
+           popup ignores them entirely and follows the browser's colour scheme.
+           That is why they never matched. */
+        .trigger-toolbar .tt-dropdown { position: relative; }
+        .trigger-toolbar .tt-control {
+            width: 100%; padding: 7px 26px 7px 10px; font-size: 1.3rem;
+            border: 1px solid #d1d5db; border-radius: 4px;
+            background: #fff; color: #606c76; cursor: pointer;
+            transition: border-color .15s;
         }
+        .trigger-toolbar .tt-control:focus {
+            outline: none; border-color: #9b4dca; box-shadow: 0 0 0 2px rgba(155,77,202,.15);
+        }
+        .trigger-toolbar .tt-control::placeholder { color: #bbb; }
+        /* The same caret a native select draws, so all three read the same. */
+        .trigger-toolbar .tt-caret {
+            position: absolute; right: 10px; top: 50%; margin-top: -2px;
+            width: 0; height: 0; pointer-events: none;
+            border-left: 4px solid transparent; border-right: 4px solid transparent;
+            border-top: 5px solid #999;
+        }
+        .trigger-toolbar .tt-options {
+            display: none; position: absolute; z-index: 60; left: 0; right: 0; top: 100%; margin-top: 4px;
+            max-height: 220px; overflow-y: auto;
+            background: #fff; border: 1px solid #d1d5db; border-radius: 4px;
+            box-shadow: 0 6px 16px rgba(0,0,0,.14);
+        }
+        .trigger-toolbar .tt-options.open { display: block; }
+        .trigger-toolbar .tt-option {
+            padding: 6px 10px; font-size: 1.3rem; color: #606c76; cursor: pointer;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .trigger-toolbar .tt-option + .tt-option { border-top: 1px solid #f3f4f6; }
+        .trigger-toolbar .tt-option:hover,
+        .trigger-toolbar .tt-option.active { background: #f5f3ff; color: #6d28d9; }
+        .trigger-toolbar .tt-option.is-empty,
+        .trigger-toolbar .tt-option.is-empty:hover { color: #999; background: none; cursor: default; }
+        .trigger-toolbar .tt-option-meta { color: #999; font-size: 1.1rem; margin-left: 6px; }
         /* Trigger and the round hide button share the last column, so they stay
            on one line however narrow that column gets. */
         .trigger-toolbar .tt-actions { display: flex; align-items: center; gap: 8px; }
@@ -766,8 +809,10 @@
         _projectState = { id: projectId, page: 0, jobName: '', allHistory: false, total: 0, jobs: [], seq: 0 };
         _projectJobNames = [];
         // expanded: the panel starts collapsed on every visit, so the page opens
-        // on a single button.
-        _manualTrigger = { projectId: projectId, repoUrl: '', refMode: 'branches', expanded: false };
+        // on a single button. open/active track the dropdown that is currently
+        // showing, and are reset with the page.
+        _manualTrigger = { projectId: projectId, repoUrl: '', refMode: 'branches', expanded: false, open: '', active: -1 };
+        _ttOptions = { ttRef: [], ttJob: [], ttDepBranch: [] };
         app.innerHTML =
             // Header: the title and the back link stack on the left, while the
             // manual trigger panel takes the right-hand side beside them.
@@ -995,7 +1040,161 @@
     // dependency branch. The ref lists come from the codebase gateway and the
     // dependency branch from the dependency service, both proxied by the API
     // server (the browser cannot reach them directly).
-    var _manualTrigger = { projectId: '', repoUrl: '', refMode: 'branches' };
+    var _manualTrigger = { projectId: '', repoUrl: '', refMode: 'branches', expanded: false, open: '', active: -1 };
+
+    // Options per dropdown, as [{name, meta}]; `meta` is optional trailing text
+    // such as the "(default)" marker on a repository's default branch.
+    var _ttOptions = { ttRef: [], ttJob: [], ttDepBranch: [] };
+
+    // One dropdown markup shared by all three fields. An editable field takes
+    // free text (the job name may not be in the history yet); the others are
+    // read-only, so they behave like the selects they replace.
+    function ttDropdownHtml(id, editable, placeholder) {
+        return '<div class="tt-dropdown">' +
+            '<input type="text" id="' + id + '" class="tt-control" autocomplete="off"' +
+                (editable ? '' : ' readonly') +
+                ' placeholder="' + escAttr(placeholder) + '">' +
+            '<span class="tt-caret"></span>' +
+            '<div class="tt-options" id="' + id + 'Options"></div>' +
+        '</div>';
+    }
+
+    function ttBindAll() {
+        ttBind('ttRef', false);
+        ttBind('ttJob', true);
+        ttBind('ttDepBranch', false);
+    }
+
+    function ttBind(id, editable) {
+        var input = document.getElementById(id);
+        var list = document.getElementById(id + 'Options');
+        if (!input || !list) return;
+
+        input.addEventListener('focus', function() { ttOpen(id, editable ? input.value : ''); });
+        input.addEventListener('click', function() { ttOpen(id, editable ? input.value : ''); });
+        if (editable) {
+            input.addEventListener('input', function() { ttOpen(id, input.value); });
+        }
+        input.addEventListener('keydown', function(e) {
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                e.preventDefault();
+                if (_manualTrigger.open !== id) { ttOpen(id, editable ? input.value : ''); return; }
+                ttMove(id, e.key === 'ArrowDown' ? 1 : -1);
+            } else if (e.key === 'Enter') {
+                if (_manualTrigger.open === id) { e.preventDefault(); ttCommit(id); }
+            } else if (e.key === 'Escape') {
+                ttClose();
+            }
+        });
+        list.addEventListener('click', function(e) {
+            var option = ttFindOption(e.target, list);
+            if (option) ttPick(id, option.getAttribute('data-value'));
+        });
+    }
+
+    // Registered once rather than per list: the list is rebuilt on every render,
+    // so a per-list listener would have to be re-attached each time.
+    document.addEventListener('click', function(e) {
+        var id = _manualTrigger.open;
+        if (!id) return;
+        var input = document.getElementById(id);
+        var box = input ? input.parentNode : null;
+        if (box && box.contains(e.target)) return;
+        ttClose();
+    });
+
+    function ttOpen(id, filter) {
+        var list = document.getElementById(id + 'Options');
+        if (!list) return;
+        if (_manualTrigger.open && _manualTrigger.open !== id) ttClose();
+        ttRenderOptions(id, filter);
+        list.classList.add('open');
+        _manualTrigger.open = id;
+        _manualTrigger.active = -1;
+    }
+
+    function ttClose() {
+        var id = _manualTrigger.open;
+        if (!id) return;
+        var list = document.getElementById(id + 'Options');
+        if (list) list.classList.remove('open');
+        _manualTrigger.open = '';
+        _manualTrigger.active = -1;
+    }
+
+    function ttRenderOptions(id, filter) {
+        var list = document.getElementById(id + 'Options');
+        if (!list) return;
+        var all = _ttOptions[id] || [];
+        var needle = String(filter == null ? '' : filter).toLowerCase();
+        var html = '';
+        for (var i = 0; i < all.length; i++) {
+            if (needle && all[i].name.toLowerCase().indexOf(needle) < 0) continue;
+            html += '<div class="tt-option" data-value="' + escAttr(all[i].name) + '">' +
+                escHtml(all[i].name) +
+                (all[i].meta ? '<span class="tt-option-meta">' + escHtml(all[i].meta) + '</span>' : '') +
+                '</div>';
+        }
+        if (!html) {
+            html = '<div class="tt-option is-empty">' + (needle ? 'No match' : 'No options') + '</div>';
+        }
+        list.innerHTML = html;
+    }
+
+    // Walks up from the click target to the option element, so the meta span and
+    // any other child of an option still select it.
+    function ttFindOption(node, list) {
+        while (node && node !== list) {
+            if (node.getAttribute && node.getAttribute('data-value') !== null) return node;
+            node = node.parentNode;
+        }
+        return null;
+    }
+
+    function ttMove(id, delta) {
+        var list = document.getElementById(id + 'Options');
+        if (!list) return;
+        var opts = list.querySelectorAll('.tt-option[data-value]');
+        if (!opts.length) return;
+        var idx = _manualTrigger.active + delta;
+        if (idx < 0) idx = opts.length - 1;
+        if (idx >= opts.length) idx = 0;
+        for (var i = 0; i < opts.length; i++) {
+            if (i === idx) opts[i].classList.add('active'); else opts[i].classList.remove('active');
+        }
+        _manualTrigger.active = idx;
+    }
+
+    function ttCommit(id) {
+        var list = document.getElementById(id + 'Options');
+        if (!list) return;
+        var opts = list.querySelectorAll('.tt-option[data-value]');
+        if (_manualTrigger.active < 0 || _manualTrigger.active >= opts.length) { ttClose(); return; }
+        ttPick(id, opts[_manualTrigger.active].getAttribute('data-value'));
+    }
+
+    function ttPick(id, value) {
+        var input = document.getElementById(id);
+        if (input) input.value = value;
+        ttClose();
+    }
+
+    // Replaces one dropdown's options. clearIfMissing drops a current selection
+    // that the new set no longer offers — e.g. a branch name after the ref list
+    // was switched to tags. It is off for the job field, where a typed name that
+    // is not in the history is legitimate and must survive a refresh.
+    function ttSetOptions(id, items, clearIfMissing) {
+        _ttOptions[id] = items || [];
+        var input = document.getElementById(id);
+        if (input && clearIfMissing && input.value) {
+            var keep = false;
+            for (var i = 0; i < _ttOptions[id].length; i++) {
+                if (_ttOptions[id][i].name === input.value) { keep = true; break; }
+            }
+            if (!keep) input.value = '';
+        }
+        if (_manualTrigger.open === id) ttRenderOptions(id, '');
+    }
 
     function renderManualTriggerToolbar() {
         // Grid order: Ref | Job | DEP_BRANCH | Trigger on one row, with the
@@ -1003,16 +1202,15 @@
         return '<div class="trigger-toolbar" id="manualTriggerToolbar">' +
             '<div class="tt-field">' +
                 '<label class="tt-label tt-clickable" onclick="manualTriggerToggleRef()" title="Click to switch between the branch list and the tag list">Ref · <span id="ttRefMode">Branches</span> ⇄</label>' +
-                '<select id="ttRef"><option value="">Loading...</option></select>' +
+                ttDropdownHtml('ttRef', false, 'Select branch / tag') +
             '</div>' +
             '<div class="tt-field">' +
                 '<label class="tt-label" for="ttJob">Job</label>' +
-                '<input type="text" id="ttJob" list="ttJobList" placeholder="job name" autocomplete="off">' +
-                '<datalist id="ttJobList"></datalist>' +
+                ttDropdownHtml('ttJob', true, 'job name') +
             '</div>' +
             '<div class="tt-field">' +
                 '<label class="tt-label" for="ttDepBranch">DEP_BRANCH</label>' +
-                '<select id="ttDepBranch"><option value="">Loading...</option></select>' +
+                ttDropdownHtml('ttDepBranch', false, 'Select branch') +
             '</div>' +
             '<div class="tt-actions">' +
                 '<button class="btn btn-outline tt-submit" id="ttSubmit" onclick="manualTriggerSubmit()">Trigger</button>' +
@@ -1034,13 +1232,16 @@
 
     function manualTriggerToggle() {
         _manualTrigger.expanded = !_manualTrigger.expanded;
+        ttClose();
         var panel = document.getElementById('manualTriggerPanel');
         if (!panel) return;
         panel.innerHTML = renderManualTriggerPanel();
         if (!_manualTrigger.expanded) return;
-        // Everything the panel needs is fetched on first expansion — the page
-        // itself never asks the gateway or the dependency service for anything
-        // unless this panel is opened.
+        // The dropdowns are recreated with the panel, so their listeners have to
+        // be attached again. Everything they show is then fetched — the page
+        // never asks the gateway or the dependency service for anything unless
+        // this panel is opened.
+        ttBindAll();
         fillManualTriggerJobs();
         loadManualTriggerRefs();
         loadManualTriggerDependency();
@@ -1049,33 +1250,26 @@
 
     // The job field's candidates come from the project's job history, which the
     // page fetches independently of the panel (and possibly before it is
-    // opened), so they are held here and copied in whenever the panel renders.
+    // opened), so they are held here and applied whenever the panel renders.
     function fillManualTriggerJobs() {
-        var jobList = document.getElementById('ttJobList');
-        if (!jobList) return; // panel still collapsed
-        jobList.innerHTML = '';
+        if (!document.getElementById('ttJob')) return; // panel still collapsed
+        var items = [];
         for (var i = 0; i < _projectJobNames.length; i++) {
-            var opt = document.createElement('option');
-            opt.value = _projectJobNames[i];
-            jobList.appendChild(opt);
+            items.push({ name: _projectJobNames[i] });
         }
+        ttSetOptions('ttJob', items);
     }
 
     function loadManualTriggerRefs() {
-        var sel = document.getElementById('ttRef');
-        if (!sel) return;
+        var input = document.getElementById('ttRef');
+        if (!input) return; // panel still collapsed, or navigated away
         var mode = _manualTrigger.refMode;
-        sel.innerHTML = '<option value="">Loading...</option>';
         fetchWithTimeout('/api/projects/' + encodeURIComponent(_manualTrigger.projectId) + '/' + mode)
             .then(function(r) { return r.json(); })
             .then(function(data) {
-                if (!document.body.contains(sel)) return; // navigated away
+                if (!document.body.contains(input)) return; // navigated away
                 if (data.error) throw new Error(data.error);
                 var items = data[mode] || [];
-                if (items.length === 0) {
-                    sel.innerHTML = '<option value="">No ' + escHtml(mode) + '</option>';
-                    return;
-                }
                 // Branches list the repository default first: it is what most
                 // manual runs want, and a plain alphabetical list buries it.
                 if (mode === 'branches') {
@@ -1083,60 +1277,56 @@
                         return (b.default ? 1 : 0) - (a.default ? 1 : 0);
                     });
                 }
-                var html = '';
+                var options = [];
                 for (var i = 0; i < items.length; i++) {
-                    var text = items[i].name + (items[i].default ? '  (default)' : '');
-                    html += '<option value="' + escAttr(items[i].name) + '">' + escHtml(text) + '</option>';
+                    options.push({ name: items[i].name, meta: items[i].default ? '(default)' : '' });
                 }
-                sel.innerHTML = html;
+                input.title = '';
+                ttSetOptions('ttRef', options, true);
             })
             .catch(function(err) {
-                if (!document.body.contains(sel)) return;
-                sel.innerHTML = '<option value="">Unavailable</option>';
-                // The select is far too narrow for the reason (usually an
+                if (!document.body.contains(input)) return;
+                ttSetOptions('ttRef', [], true);
+                // The field is far too narrow for the reason (usually an
                 // unconfigured gateway), so keep it in the tooltip.
-                sel.title = (err && err.message) ? err.message : String(err);
+                input.title = (err && err.message) ? err.message : String(err);
                 console.warn('manual trigger: ' + mode + ' list failed: ' + err);
             });
     }
 
     function loadManualTriggerDependency() {
-        var sel = document.getElementById('ttDepBranch');
-        if (!sel) return;
-        sel.innerHTML = '<option value="">Loading...</option>';
+        var input = document.getElementById('ttDepBranch');
+        if (!input) return; // panel still collapsed, or navigated away
         fetchWithTimeout('/api/dependency/branches')
             .then(function(r) { return r.json(); })
             .then(function(data) {
-                if (!document.body.contains(sel)) return;
+                if (!document.body.contains(input)) return;
                 if (data.error) throw new Error(data.error);
                 var branches = data.branches || [];
-                if (branches.length === 0) {
-                    sel.innerHTML = '<option value="">Unavailable</option>';
-                    return;
-                }
-                var html = '';
+                var options = [];
                 for (var i = 0; i < branches.length; i++) {
-                    html += '<option value="' + escAttr(branches[i]) + '">' + escHtml(branches[i]) + '</option>';
+                    options.push({ name: branches[i] });
                 }
-                sel.innerHTML = html;
+                input.title = '';
+                ttSetOptions('ttDepBranch', options, true);
                 // Preselect the service's current default, if it names one of
-                // the branches just listed. Assigning an absent value would
-                // blank the select, so the options are matched explicitly.
+                // the branches just listed. Matching explicitly keeps an absent
+                // value from blanking the field.
                 fetchWithTimeout('/api/dependency/default')
                     .then(function(r) { return r.json(); })
                     .then(function(def) {
-                        if (!document.body.contains(sel)) return;
-                        if (!def || !def.branch) return;
-                        for (var k = 0; k < sel.options.length; k++) {
-                            if (sel.options[k].value === def.branch) { sel.selectedIndex = k; break; }
+                        if (!document.body.contains(input)) return;
+                        var want = (def && def.branch) || '';
+                        for (var k = 0; k < options.length; k++) {
+                            if (options[k].name === want) { input.value = want; break; }
                         }
                     })
-                    .catch(function() { /* keep the first option */ });
+                    .catch(function() { /* leave the field empty */ });
             })
             .catch(function(err) {
-                if (!document.body.contains(sel)) return;
-                sel.innerHTML = '<option value="">Unavailable</option>';
-                sel.title = (err && err.message) ? err.message : String(err);
+                if (!document.body.contains(input)) return;
+                ttSetOptions('ttDepBranch', [], true);
+                input.title = (err && err.message) ? err.message : String(err);
                 console.warn('manual trigger: dependency branches failed: ' + err);
             });
     }
@@ -1145,6 +1335,7 @@
         _manualTrigger.refMode = _manualTrigger.refMode === 'branches' ? 'tags' : 'branches';
         var modeEl = document.getElementById('ttRefMode');
         if (modeEl) modeEl.textContent = _manualTrigger.refMode === 'branches' ? 'Branches' : 'Tags';
+        ttClose();
         loadManualTriggerRefs();
     }
     window.manualTriggerToggleRef = manualTriggerToggleRef;
