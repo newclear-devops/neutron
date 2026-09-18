@@ -9,6 +9,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 
 	"neutron/internal"
 	"neutron/internal/model"
@@ -65,6 +66,33 @@ func TestKillRunningJobDeletesJobAndRecordsFailure(t *testing.T) {
 		Get(context.Background(), name, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
 		t.Errorf("Job still present (err = %v), want NotFound", err)
 	}
+
+	// The Job going away is not on its own enough to stop the Pods. This asserts
+	// the request carried an explicit policy, because the default for a
+	// policy-less delete of a batch/v1 Job is OrphanDependents — the Pods would
+	// survive. The fake applies the cascade whatever the policy says, so the
+	// recorded request is the only place the defaulting gap can be caught.
+	opts := deletedJobOptions(t, srv)
+	if opts.PropagationPolicy == nil || *opts.PropagationPolicy != metav1.DeletePropagationBackground {
+		t.Errorf("propagation policy = %v, want Background (a policy-less delete leaves the Pods orphaned)", opts.PropagationPolicy)
+	}
+}
+
+// deletedJobOptions returns the DeleteOptions the server sent for the Job, read
+// back from the fake clientset's recorded actions.
+func deletedJobOptions(t *testing.T, srv *Server) metav1.DeleteOptions {
+	t.Helper()
+	cs, ok := srv.clientSet.(*fake.Clientset)
+	if !ok {
+		t.Fatalf("clientSet is %T, want *fake.Clientset", srv.clientSet)
+	}
+	for _, a := range cs.Actions() {
+		if da, ok := a.(k8stesting.DeleteAction); ok && da.GetResource().Resource == "jobs" {
+			return da.GetDeleteOptions()
+		}
+	}
+	t.Fatal("no Job delete was recorded")
+	return metav1.DeleteOptions{}
 }
 
 // A Job that is already gone — TTL-cleaned, or deleted by hand — must not fail

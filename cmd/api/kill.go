@@ -66,16 +66,28 @@ func (s *Server) handleKill(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"ok": true, "job_name": jobName})
 }
 
-// killRunningJob deletes the run's Kubernetes Job, cascading to its Pods, and
-// returns the terminal status to record. It is kept out of the handler so the
-// Kubernetes half is testable without a database.
+// killRunningJob deletes the run's Kubernetes Job and its Pods, and returns the
+// terminal status to record. It is kept out of the handler so the Kubernetes
+// half is testable without a database.
+//
+// The propagation policy is set explicitly rather than left unset. A delete of a
+// batch/v1 Job carrying no policy defaults to OrphanDependents — Kubernetes
+// keeps that for backwards compatibility — which removes the Job but leaves its
+// Pods running. That is the opposite of what a kill is for: a hung step would
+// keep its resources, and with the Job gone nothing else would ever clean them
+// up. kubectl only looks like it cascades because it always sends a policy of
+// its own. Background fits this endpoint: the Job goes away at once and the
+// garbage collector removes the Pods, without the request waiting for them.
 //
 // A Job that is already gone is not an error: the outcome still gets recorded,
 // which is the point of the endpoint — it also closes out a row whose Job was
 // TTL-cleaned while it never reported.
 func (s *Server) killRunningJob(dbJob *internal.PipelineJob) (internal.JobStatus, error) {
+	// The policy is a pointer, where nil means "unset" and would fall back to
+	// the default described above, so it needs a variable of its own.
+	propagation := metav1.DeletePropagationBackground
 	err := s.clientSet.BatchV1().Jobs(s.config.Kubernetes.Namespace).
-		Delete(context.Background(), dbJob.Name, metav1.DeleteOptions{})
+		Delete(context.Background(), dbJob.Name, metav1.DeleteOptions{PropagationPolicy: &propagation})
 	switch {
 	case err == nil:
 		return killStatus(dbJob, true), nil
