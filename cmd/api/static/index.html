@@ -114,6 +114,23 @@
         tr:hover td { background: #f9fafb; }
         td a { font-weight: 600; }
 
+        /* --- Pod list and its action row --- */
+        /* The pod table's Status column is given a fixed width so the action row
+           below can mirror the very same column split. That puts the buttons in
+           line with the pod list: Test Report / Rerun under Pod, Kill under
+           Status. Pushed to the card's right edge instead, Kill read as floating
+           outside the table. The variable keeps the two rules in sync. */
+        .card { --pod-status-col: 120px; }
+        .pod-table th:last-child, .pod-table td:last-child { width: var(--pod-status-col); }
+        .pod-actions {
+            display: grid; grid-template-columns: 1fr var(--pod-status-col);
+            gap: 12px; align-items: center; margin-top: 16px;
+        }
+        .pod-actions .pa-left { display: flex; gap: 12px; align-items: center; }
+        /* Matches the cells' 12px left padding, so the button lines up with the
+           "Status" header and the phase text rather than the column's edge. */
+        .pod-actions .pa-kill { padding-left: 12px; }
+
         /* --- Form --- */
         /* Form controls do not pick up the page font on their own: the browser's
            own stylesheet sets a font directly on them, and a rule targeting the
@@ -1822,6 +1839,12 @@
         var triggerType = status.trigger_type || ann.triggerType || '';
         var sourceUrl = status.source_url || ann.sourceUrl || '';
 
+        // A run can be force-killed only while Kubernetes still has it active.
+        // A "stuck" run (its Job already gone) is excluded: there is nothing
+        // left to delete, and recording "failed" would assert an outcome nobody
+        // actually knows.
+        var killable = !stuck && active > 0;
+
         var podsHtml = '';
         for (var i = 0; i < items.length; i++) {
             var pod = items[i];
@@ -1851,14 +1874,23 @@
                     '<div class="stat">Failed: <b>' + failed + '</b></div>' +
                 '</div>' +
                 (items.length > 0 ?
-                    '<table><thead><tr><th>Pod</th><th>Status</th></tr></thead><tbody>' + podsHtml + '</tbody></table>'
+                    '<table class="pod-table"><thead><tr><th>Pod</th><th>Status</th></tr></thead><tbody>' + podsHtml + '</tbody></table>'
                     : '<p style="color:#999;margin-top:12px">No pods found.</p>') +
                 (appConfig.logUrl ? '<p class="log-hint">Click pod name to view logs on external platform</p>' : '') +
                 (stuck ? '<p style="color:#b06000;margin-top:12px">The Kubernetes Job for this run has already been cleaned up, so no further status will arrive. Its outcome is unknown.</p>' : '') +
-                ((reportUrl || rerunnable) ?
-                    '<div style="margin-top:16px;display:flex;gap:12px;align-items:center">' +
-                        (reportUrl ? '<a target="_blank" href="' + escAttr(reportUrl) + '" class="btn btn-outline" style="padding:6px 16px;font-size:1.3rem">Test Report</a>' : '') +
-                        (rerunnable ? '<button class="btn btn-outline" style="padding:6px 16px;font-size:1.3rem" onclick="rerunJob(\'' + escAttr(jobName) + '\')">Rerun</button>' : '') +
+                // Laid out as two columns matching the pod table's, so Kill sits
+                // under the Status column and the benign actions stay under Pod.
+                // It is also the far side of the row from them, which keeps the
+                // destructive button away from the ones clicked routinely.
+                ((reportUrl || rerunnable || killable) ?
+                    '<div class="pod-actions">' +
+                        '<div class="pa-left">' +
+                            (reportUrl ? '<a target="_blank" href="' + escAttr(reportUrl) + '" class="btn btn-outline" style="padding:6px 16px;font-size:1.3rem">Test Report</a>' : '') +
+                            (rerunnable ? '<button class="btn btn-outline" style="padding:6px 16px;font-size:1.3rem" onclick="rerunJob(\'' + escAttr(jobName) + '\')">Rerun</button>' : '') +
+                        '</div>' +
+                        '<div class="pa-kill">' +
+                            (killable ? '<button class="btn btn-outline" style="padding:6px 16px;font-size:1.3rem;color:#dc2626;border-color:#f0b4b4" onclick="killJob(\'' + escAttr(jobName) + '\')">Kill</button>' : '') +
+                        '</div>' +
                     '</div>'
                     : '') +
             '</div>' +
@@ -1880,6 +1912,22 @@
             .catch(function(err) { alert('Rerun failed: ' + err); });
     }
     window.rerunJob = rerunJob;
+
+    // Force-terminates a run that is stuck: the server deletes the Kubernetes
+    // Job (cascading to its Pods) and records the run as failed, so it stops
+    // holding cluster resources and stops counting as a running sibling.
+    function killJob(jobName) {
+        if (!confirm('Force-kill this run?\n\nIts steps are stopped immediately and the Kubernetes Job and its Pods are deleted. A deploy or any other side-effecting step may be left half-done.')) return;
+        fetch('/api/jobs/' + encodeURIComponent(jobName) + '/kill', { method: 'POST' })
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (data.error) { alert(data.error); return; }
+                // Re-render so the recorded outcome replaces the running state.
+                renderStatus(jobName);
+            })
+            .catch(function(err) { alert('Kill failed: ' + err); });
+    }
+    window.killJob = killJob;
 
     // --- Utils ---
     // Copy text to clipboard. navigator.clipboard is only available in secure
