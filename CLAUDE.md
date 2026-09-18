@@ -116,6 +116,22 @@ kubectl get jobs -o name | grep '^job\.batch/neutron-' | \
 
 Before doing that, check whether any row within `ListUncompletedJobs`' 7-day window is still uncompleted (`completed = 0`) — those are precisely the rows that would lose their last source of truth. Let the reconciler close them out first (it does so within ~1h of the K8s Job going terminal), then patch.
 
+### Killing a Stuck Run (manual)
+
+A run can hang: still active in Kubernetes, never reaching a terminal state (a wedged step, a build that never returns, a Pod that never pulls its image). Neither existing mechanism helps — `TTLSecondsAfterFinished` only applies to Jobs that have **finished**, and the reconciler skips Jobs that are not terminal — so such a run keeps its Pods forever and keeps counting as a running sibling in `handleRunningSiblings`.
+
+No automatic timeout is used instead: pipeline durations vary too much for any global deadline to be safe, since it would eventually kill a legitimately slow build. Termination stays an explicit, confirmed action from the status page (`Kill`, beside `Rerun`). It is shown only while the run is genuinely active — not for the "stuck, Job already gone" case, where recording a failure would assert an outcome nobody actually knows.
+
+`POST /api/jobs/:jobName/kill` (`cmd/api/kill.go`):
+
+1. Answers **409** when the row is already completed. That is both the "nothing to kill" answer and what makes a repeated click safe (no second completion notification).
+2. Deletes the Kubernetes Job, cascading to its Pods. A Job that is already gone is tolerated, not an error.
+3. Records a terminal `failed` status, marks the job completed, and sends the completion notification with the reason `被手动强制终止（Kill）`. The descriptive fields are carried over from the previous status — zeroing them would blank the project/source links on the status page.
+
+**Order matters: the Job is deleted before anything is written.** The reverse order would leave a run recorded as failed whose Kubernetes Job keeps running: invisible, resource-hungry, and with nothing to self-heal it (TTL will not fire on a Job that never terminates). As written, a failed delete leaves the row untouched and the request is simply retryable; the only degraded outcome is a successful delete followed by a failed status write, which lands in the same "stuck, outcome unknown" state a TTL-cleaned never-reported job already has.
+
+Like the rest of the API, the endpoint has no access control — `Rerun` is already exposed at the same trust level.
+
 ### Notifications
 
 Notifications are configured **per job** in the repository's `neutron.yaml`, under each job's optional `notify` block:

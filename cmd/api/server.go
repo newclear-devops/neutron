@@ -71,6 +71,8 @@ func (s *Server) registerRoutes(r *gin.Engine) {
 	r.POST("/api/report/:jobName/pod", s.handleReportPod)
 	r.POST("/api/report/:jobName/link", s.handleReportLink)
 	r.POST("/api/jobs/:jobName/rerun", s.handleRerun)
+	// Force-terminate a run that is stuck in Kubernetes (see kill.go).
+	r.POST("/api/jobs/:jobName/kill", s.handleKill)
 	r.POST("/webhook/:id", s.handleWebhook)
 	r.POST("/api/trigger", s.handleTrigger)
 }

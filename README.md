@@ -282,6 +282,7 @@ Platform is auto-detected from webhook headers (`X-Codeup-Event` → Codeup, oth
 | POST | `/api/report/:jobName` | Runner status push (internal) |
 | POST | `/api/report/:jobName/link` | Set a test report URL for a job (`{"report_url": "..."}`) |
 | POST | `/api/jobs/:jobName/rerun` | Rerun a job from its persisted spec |
+| POST | `/api/jobs/:jobName/kill` | Force-terminate a still-running job: delete its K8s Job/Pods and record it as failed |
 | POST | `/api/trigger` | Trigger a pipeline by repo URL / job / ref without a webhook |
 | GET/PUT | `/api/default-pipeline` | Read or update the global default pipeline |
 
