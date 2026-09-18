@@ -160,6 +160,11 @@
         .btn-primary:hover { background: #7b2fa0; }
         .btn-outline { background: #fff; color: #606c76; border: 1px solid #d1d5db; }
         .btn-outline:hover { background: #f9fafb; border-color: #9b4dca; color: #9b4dca; }
+        /* Destructive actions: red rather than purple, so "this one is risky"
+           reads before the label does. margin-top 0 because it is used inside
+           dialogs, where .btn-primary's form margin would push it off-centre. */
+        .btn-danger { background: #dc2626; border-color: #dc2626; color: #fff; margin-top: 0; }
+        .btn-danger:hover { background: #b91c1c; border-color: #b91c1c; }
 
         /* --- Success message --- */
         .success-box {
@@ -192,6 +197,8 @@
         .modal h4 { margin-bottom: 16px; font-size: 1.8rem; }
         .modal-input-row { display: flex; gap: 8px; margin-top: 16px; }
         .modal-input-row input { flex: 1; margin: 0; }
+        .modal-body { margin-bottom: 20px; font-size: 1.4rem; color: #606c76; line-height: 1.7; }
+        .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
 
         /* --- Manual trigger toolbar (project detail page) --- */
         /* A boxed panel pinned to the right of the page header. The four controls
@@ -238,6 +245,22 @@
             border-left: 4px solid transparent; border-right: 4px solid transparent;
             border-top: 5px solid #999;
         }
+        /* Type-to-filter fields also get a clear affordance. It sits to the
+           left of the caret rather than replacing it, so all three controls
+           keep the same caret and still read as the same kind of widget. */
+        .trigger-toolbar .tt-clear {
+            position: absolute; right: 22px; top: 50%; margin-top: -9px;
+            width: 18px; height: 18px; padding: 0; line-height: 16px;
+            border: none; border-radius: 50%;
+            background: #e5e7eb; color: #606c76;
+            font-size: 1.4rem; text-align: center; cursor: pointer;
+            display: none;
+        }
+        .trigger-toolbar .tt-dropdown.has-value .tt-clear { display: block; }
+        .trigger-toolbar .tt-clear:hover { background: #d1d5db; color: #333; }
+        /* Room for the clear button beside the caret. Only the right padding
+           changes, so the text itself never shifts when the button appears. */
+        .trigger-toolbar .tt-dropdown.has-value .tt-control { padding-right: 44px; }
         .trigger-toolbar .tt-options {
             display: none; position: absolute; z-index: 60; left: 0; right: 0; top: 100%; margin-top: 4px;
             max-height: 220px; overflow-y: auto;
@@ -1072,6 +1095,9 @@
                 (editable ? '' : ' readonly') +
                 ' placeholder="' + escAttr(placeholder) + '">' +
             '<span class="tt-caret"></span>' +
+            // Only a field the user can type into needs clearing; the read-only
+            // ones are emptied by picking another option from the list.
+            (editable ? '<button type="button" class="tt-clear" id="' + id + 'Clear" title="Clear" aria-label="Clear">&times;</button>' : '') +
             '<div class="tt-options" id="' + id + 'Options"></div>' +
         '</div>';
     }
@@ -1086,12 +1112,27 @@
         var input = document.getElementById(id);
         var list = document.getElementById(id + 'Options');
         if (!input || !list) return;
+        var clearBtn = document.getElementById(id + 'Clear');
 
         input.addEventListener('focus', function() { ttOpen(id, editable ? input.value : ''); });
         input.addEventListener('click', function() { ttOpen(id, editable ? input.value : ''); });
         if (editable) {
-            input.addEventListener('input', function() { ttOpen(id, input.value); });
+            input.addEventListener('input', function() { ttSyncClear(id); ttOpen(id, input.value); });
+            // Clearing keeps the list open on the full set: with nothing typed
+            // there is nothing left to filter by. stopPropagation keeps the
+            // document handler below from closing it again on this same click.
+            if (clearBtn) {
+                clearBtn.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    input.value = '';
+                    input.focus();
+                    ttSyncClear(id);
+                    ttOpen(id, '');
+                });
+            }
         }
+        ttSyncClear(id);
         input.addEventListener('keydown', function(e) {
             if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
                 e.preventDefault();
@@ -1144,12 +1185,21 @@
         if (!list) return;
         var all = _ttOptions[id] || [];
         var needle = String(filter == null ? '' : filter).toLowerCase();
-        var html = '';
+        var shown = [];
         for (var i = 0; i < all.length; i++) {
-            if (needle && all[i].name.toLowerCase().indexOf(needle) < 0) continue;
-            html += '<div class="tt-option" data-value="' + escAttr(all[i].name) + '">' +
-                escHtml(all[i].name) +
-                (all[i].meta ? '<span class="tt-option-meta">' + escHtml(all[i].meta) + '</span>' : '') +
+            if (!needle || all[i].name.toLowerCase().indexOf(needle) >= 0) shown.push(all[i]);
+        }
+        // The typed text matches nothing — a typo, or a job that has never run
+        // and so is not in the history yet. Fall back to every option instead
+        // of stranding the user on "No match": switching to a different job
+        // should not require clearing the field first.
+        if (needle && shown.length === 0) shown = all;
+
+        var html = '';
+        for (var j = 0; j < shown.length; j++) {
+            html += '<div class="tt-option" data-value="' + escAttr(shown[j].name) + '">' +
+                escHtml(shown[j].name) +
+                (shown[j].meta ? '<span class="tt-option-meta">' + escHtml(shown[j].meta) + '</span>' : '') +
                 '</div>';
         }
         if (!html) {
@@ -1190,9 +1240,19 @@
         ttPick(id, opts[_manualTrigger.active].getAttribute('data-value'));
     }
 
+    // Shows the clear button only while the field holds a value. Called from
+    // everywhere that value can change — typing, picking, clearing, and a
+    // refreshed option set — so the button cannot drift out of sync with it.
+    function ttSyncClear(id) {
+        var input = document.getElementById(id);
+        if (!input || !input.parentNode) return;
+        input.parentNode.classList.toggle('has-value', !!input.value);
+    }
+
     function ttPick(id, value) {
         var input = document.getElementById(id);
         if (input) input.value = value;
+        ttSyncClear(id);
         ttClose();
     }
 
@@ -1208,7 +1268,7 @@
             for (var i = 0; i < _ttOptions[id].length; i++) {
                 if (_ttOptions[id][i].name === input.value) { keep = true; break; }
             }
-            if (!keep) input.value = '';
+            if (!keep) { input.value = ''; ttSyncClear(id); }
         }
         if (_manualTrigger.open === id) ttRenderOptions(id, '');
     }
@@ -1382,7 +1442,6 @@
         var refEl = document.getElementById('ttRef');
         var jobEl = document.getElementById('ttJob');
         var depEl = document.getElementById('ttDepBranch');
-        var btn = document.getElementById('ttSubmit');
 
         var ref = refEl ? refEl.value : '';
         var jobName = jobEl ? jobEl.value.trim() : '';
@@ -1391,6 +1450,22 @@
         if (!_manualTrigger.repoUrl) { manualTriggerResult('Project not found.', true); return; }
         if (!ref) { manualTriggerResult('Select a branch or tag first.', true); return; }
         if (!jobName) { manualTriggerResult('Select or type a job name first.', true); return; }
+
+        // A release job run off a branch ships that branch name as the version,
+        // which is almost never what was meant. Not blocked outright — one
+        // confirmation, then it fires. Skipped once the ref is a tag, since a
+        // tag is exactly what these jobs are supposed to run from.
+        if (isPublishJobName(jobName) && _manualTrigger.refMode === 'branches') {
+            confirmPublishOnBranch(jobName, ref, function() { triggerManual(ref, jobName, depBranch); });
+            return;
+        }
+        triggerManual(ref, jobName, depBranch);
+    }
+
+    // Fires the request. Split out of the submit handler so the confirmation
+    // above can decide whether it runs at all.
+    function triggerManual(ref, jobName, depBranch) {
+        var btn = document.getElementById('ttSubmit');
 
         var payload = { repo_url: _manualTrigger.repoUrl, job_name: jobName, ref: ref, env: {} };
         if (depBranch) payload.env.DEP_BRANCH = depBranch;
@@ -1423,6 +1498,67 @@
             });
     }
     window.manualTriggerSubmit = manualTriggerSubmit;
+
+    // Release jobs are named after what they publish, so anything containing
+    // "publish" is treated as one. Case-insensitive: the name comes from
+    // neutron.yaml, where it may be spelled either way.
+    function isPublishJobName(jobName) {
+        return jobName.toLowerCase().indexOf('publish') >= 0;
+    }
+
+    // Holds up a release job that is about to run off a branch. Tags are what
+    // these are meant to be triggered from; a branch is allowed, just rarely
+    // what the user actually wanted.
+    function confirmPublishOnBranch(jobName, ref, onConfirm) {
+        confirmDialog(
+            'Trigger a release job from a branch?',
+            'Release jobs should be triggered from a tag. Running "' + jobName + '" from the branch "' + ref + '" sends the branch name as the version.',
+            'Continue Anyway',
+            onConfirm
+        );
+    }
+
+    // A stand-in for window.confirm, which offers neither the wording nor the
+    // styling this one needs: the native dialog has no way to mark the proceed
+    // button red. Escape and a backdrop click both dismiss it, so every way out
+    // except the labelled button takes the safe branch.
+    function confirmDialog(title, body, confirmLabel, onConfirm) {
+        var previous = document.getElementById('ttConfirmModal');
+        if (previous) previous.remove();
+
+        var overlay = document.createElement('div');
+        overlay.className = 'modal-overlay';
+        overlay.id = 'ttConfirmModal';
+
+        function dismiss() {
+            document.removeEventListener('keydown', onKey);
+            overlay.remove();
+        }
+        function onKey(e) {
+            if (e.key === 'Escape') { e.preventDefault(); dismiss(); }
+        }
+
+        overlay.onclick = function(e) { if (e.target === overlay) dismiss(); };
+        document.addEventListener('keydown', onKey);
+
+        var modal = document.createElement('div');
+        modal.className = 'modal';
+        modal.innerHTML =
+            '<h4>' + escHtml(title) + '</h4>' +
+            '<p class="modal-body">' + escHtml(body) + '</p>' +
+            '<div class="modal-actions">' +
+                '<button type="button" class="btn btn-danger" id="ttConfirmProceed">' + escHtml(confirmLabel) + '</button>' +
+                '<button type="button" class="btn btn-outline" id="ttConfirmCancel">Cancel</button>' +
+            '</div>';
+        overlay.appendChild(modal);
+        document.body.appendChild(overlay);
+
+        document.getElementById('ttConfirmCancel').onclick = dismiss;
+        document.getElementById('ttConfirmProceed').onclick = function() {
+            dismiss();
+            onConfirm();
+        };
+    }
 
     // --- Home ---
     function renderHome() {
