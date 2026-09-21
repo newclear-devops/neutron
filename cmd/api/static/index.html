@@ -261,12 +261,23 @@
         /* Room for the clear button beside the caret. Only the right padding
            changes, so the text itself never shifts when the button appears. */
         .trigger-toolbar .tt-dropdown.has-value .tt-control { padding-right: 44px; }
+        /* The list is allowed to be wider than the control it belongs to.
+           Branch names routinely exceed a third of the panel, and pinning the
+           list to the control's width clipped every one of them to an ellipsis.
+           It sizes to its longest option instead, never narrower than the
+           control, and is capped so one freakishly long name cannot stretch it
+           across the page. Beyond the cap the option still ellipsizes, so each
+           one carries a title with the full text. */
         .trigger-toolbar .tt-options {
-            display: none; position: absolute; z-index: 60; left: 0; right: 0; top: 100%; margin-top: 4px;
+            display: none; position: absolute; z-index: 60; left: 0; right: auto; top: 100%; margin-top: 4px;
+            width: max-content; min-width: 100%; max-width: 420px;
             max-height: 220px; overflow-y: auto;
             background: #fff; border: 1px solid #d1d5db; border-radius: 4px;
             box-shadow: 0 6px 16px rgba(0,0,0,.14);
         }
+        /* The last field opens leftwards, so a wide list stays within the panel
+           instead of hanging off its right edge into the page margin. */
+        .trigger-toolbar .tt-dropdown-right .tt-options { left: auto; right: 0; }
         .trigger-toolbar .tt-options.open { display: block; }
         .trigger-toolbar .tt-option {
             padding: 6px 10px; font-size: 1.3rem; color: #606c76; cursor: pointer;
@@ -1089,8 +1100,10 @@
     // One dropdown markup shared by all three fields. An editable field takes
     // free text (the job name may not be in the history yet); the others are
     // read-only, so they behave like the selects they replace.
-    function ttDropdownHtml(id, editable, placeholder) {
-        return '<div class="tt-dropdown">' +
+    // alignRight opens the last field's list leftwards, so a list wider than its
+    // column cannot overflow the panel's right edge.
+    function ttDropdownHtml(id, editable, placeholder, alignRight) {
+        return '<div class="tt-dropdown' + (alignRight ? ' tt-dropdown-right' : '') + '">' +
             '<input type="text" id="' + id + '" class="tt-control" autocomplete="off"' +
                 (editable ? '' : ' readonly') +
                 ' placeholder="' + escAttr(placeholder) + '">' +
@@ -1126,6 +1139,7 @@
                     e.preventDefault();
                     e.stopPropagation();
                     input.value = '';
+                    input.title = '';
                     input.focus();
                     ttSyncClear(id);
                     ttOpen(id, '');
@@ -1197,7 +1211,10 @@
 
         var html = '';
         for (var j = 0; j < shown.length; j++) {
-            html += '<div class="tt-option" data-value="' + escAttr(shown[j].name) + '">' +
+            // The title is the fallback for a name longer than the list's cap,
+            // where the option still has to be clipped.
+            html += '<div class="tt-option" data-value="' + escAttr(shown[j].name) + '"' +
+                ' title="' + escAttr(shown[j].name) + '">' +
                 escHtml(shown[j].name) +
                 (shown[j].meta ? '<span class="tt-option-meta">' + escHtml(shown[j].meta) + '</span>' : '') +
                 '</div>';
@@ -1251,7 +1268,12 @@
 
     function ttPick(id, value) {
         var input = document.getElementById(id);
-        if (input) input.value = value;
+        if (input) {
+            input.value = value;
+            // A value wider than the control scrolls out of view once selected;
+            // the title is the only way back to the full text.
+            input.title = value;
+        }
         ttSyncClear(id);
         ttClose();
     }
@@ -1268,7 +1290,11 @@
             for (var i = 0; i < _ttOptions[id].length; i++) {
                 if (_ttOptions[id][i].name === input.value) { keep = true; break; }
             }
-            if (!keep) { input.value = ''; ttSyncClear(id); }
+            if (!keep) {
+                input.value = '';
+                input.title = '';
+                ttSyncClear(id);
+            }
         }
         if (_manualTrigger.open === id) ttRenderOptions(id, '');
     }
@@ -1287,7 +1313,7 @@
             '</div>' +
             '<div class="tt-field">' +
                 '<label class="tt-label" for="ttDepBranch">DEP_BRANCH</label>' +
-                ttDropdownHtml('ttDepBranch', false, 'Select branch') +
+                ttDropdownHtml('ttDepBranch', false, 'Select branch', true) +
             '</div>' +
             '<div class="tt-actions">' +
                 '<button class="btn btn-outline tt-submit" id="ttSubmit" onclick="manualTriggerSubmit()">Trigger</button>' +
