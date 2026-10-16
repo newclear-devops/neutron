@@ -26,7 +26,7 @@ func (s *Server) launchJobWithConcurrency(projectID, jobKey string, parallel boo
 		name, err := create()
 		return name, false, err
 	}
-	candidates, err := s.repo.ListUncompletedJobKey(projectID, jobKey, defaultJobWindowDays)
+	candidates, err := s.repo.ListUncompletedJobKey(projectID, jobKey)
 	if err != nil {
 		return "", false, fmt.Errorf("cannot safely check existing job runs: %w", err)
 	}

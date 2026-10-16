@@ -220,9 +220,9 @@ func (r *Repository) AcquireJobLock(ctx context.Context, projectID, jobKey strin
 	}, nil
 }
 
-func (r *Repository) ListUncompletedJobKey(projectID, jobKey string, days int) ([]PipelineJob, error) {
+func (r *Repository) ListUncompletedJobKey(projectID, jobKey string) ([]PipelineJob, error) {
 	var jobs []PipelineJob
-	err := r.db.Select("name").Where("project_id = ? AND job_name = ? AND completed = ? AND "+jobTimestampExpr()+" >= ?", projectID, jobKey, false, cutoffDays(days)).Find(&jobs).Error
+	err := r.db.Select("name").Where("project_id = ? AND job_name = ? AND completed = ?", projectID, jobKey, false).Find(&jobs).Error
 	return jobs, err
 }
 
