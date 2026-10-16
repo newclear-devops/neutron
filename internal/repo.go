@@ -192,6 +192,10 @@ func (r *Repository) AddJob(job PipelineJob) error {
 	return r.db.Create(&job).Error
 }
 
+func (r *Repository) AddJobContext(ctx context.Context, job PipelineJob) error {
+	return r.db.WithContext(ctx).Create(&job).Error
+}
+
 // AcquireJobLock serializes launch decisions for one project/job key across
 // API server instances. MySQL advisory locks belong to a dedicated connection.
 func (r *Repository) AcquireJobLock(ctx context.Context, projectID, jobKey string) (func(), error) {
@@ -204,7 +208,7 @@ func (r *Repository) AcquireJobLock(ctx context.Context, projectID, jobKey strin
 		return nil, err
 	}
 	sum := sha256.Sum256([]byte(projectID + "\x00" + jobKey))
-	lockName := "neutron:" + hex.EncodeToString(sum[:])[:56]
+	lockName := "neutron:" + hex.EncodeToString(sum[:])[:48]
 	var acquired sql.NullInt64
 	if err := conn.QueryRowContext(ctx, "SELECT GET_LOCK(?, 10)", lockName).Scan(&acquired); err != nil {
 		_ = conn.Close()
@@ -220,9 +224,9 @@ func (r *Repository) AcquireJobLock(ctx context.Context, projectID, jobKey strin
 	}, nil
 }
 
-func (r *Repository) ListUncompletedJobKey(projectID, jobKey string) ([]PipelineJob, error) {
+func (r *Repository) ListUncompletedJobKey(ctx context.Context, projectID, jobKey string) ([]PipelineJob, error) {
 	var jobs []PipelineJob
-	err := r.db.Select("name").Where("project_id = ? AND job_name = ? AND completed = ?", projectID, jobKey, false).Find(&jobs).Error
+	err := r.db.WithContext(ctx).Select("name").Where("project_id = ? AND job_name = ? AND completed = ?", projectID, jobKey, false).Find(&jobs).Error
 	return jobs, err
 }
 
