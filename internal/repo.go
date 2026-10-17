@@ -1,7 +1,11 @@
 package internal
 
 import (
+	"context"
+	"crypto/sha256"
+	"database/sql"
 	_ "embed"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"log"
@@ -113,7 +117,8 @@ type JobStatus struct {
 	// Final marks a job-level terminal report, sent by the runner exactly once
 	// after the last step. Completion notifications and DB completion are gated
 	// on it so per-step reports are not mistaken for job completion.
-	Final bool `json:"final,omitempty"`
+	Final   bool `json:"final,omitempty"`
+	Skipped bool `json:"skipped,omitempty"`
 	// Description carries the job-level summary (failing step, or the K8s
 	// failure condition for jobs the runner never reported), included in
 	// completion notifications.
@@ -185,6 +190,44 @@ func (r *Repository) GetProjectByRepoUrl(repoUrl string) PipelineProject {
 
 func (r *Repository) AddJob(job PipelineJob) error {
 	return r.db.Create(&job).Error
+}
+
+func (r *Repository) AddJobContext(ctx context.Context, job PipelineJob) error {
+	return r.db.WithContext(ctx).Create(&job).Error
+}
+
+// AcquireJobLock serializes launch decisions for one project/job key across
+// API server instances. MySQL advisory locks belong to a dedicated connection.
+func (r *Repository) AcquireJobLock(ctx context.Context, projectID, jobKey string) (func(), error) {
+	sqlDB, err := r.db.DB()
+	if err != nil {
+		return nil, err
+	}
+	conn, err := sqlDB.Conn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	sum := sha256.Sum256([]byte(projectID + "\x00" + jobKey))
+	lockName := "neutron:" + hex.EncodeToString(sum[:])[:48]
+	var acquired sql.NullInt64
+	if err := conn.QueryRowContext(ctx, "SELECT GET_LOCK(?, 10)", lockName).Scan(&acquired); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	if !acquired.Valid || acquired.Int64 != 1 {
+		_ = conn.Close()
+		return nil, errors.New("timed out acquiring job concurrency lock")
+	}
+	return func() {
+		_, _ = conn.ExecContext(context.Background(), "SELECT RELEASE_LOCK(?)", lockName)
+		_ = conn.Close()
+	}, nil
+}
+
+func (r *Repository) ListUncompletedJobKey(ctx context.Context, projectID, jobKey string) ([]PipelineJob, error) {
+	var jobs []PipelineJob
+	err := r.db.WithContext(ctx).Select("name").Where("project_id = ? AND job_name = ? AND completed = ?", projectID, jobKey, false).Find(&jobs).Error
+	return jobs, err
 }
 
 func (r *Repository) UpdateJobStatus(jobName string, status JobStatus) error {
@@ -357,7 +400,9 @@ func statusSearchClause(word string) (string, bool) {
 		// has to keep finding them. A plain LIKE is correct on the negated side:
 		// any occurrence of the flag means there is activity, whatever its value.
 		return `(status IS NULL OR status = '' OR ` +
-			`(status NOT LIKE '%"active":1%' AND status NOT LIKE '%"succeeded":1%' AND status NOT LIKE '%"failed":1%'))`, true
+			`(status NOT LIKE '%"active":1%' AND status NOT LIKE '%"succeeded":1%' AND status NOT LIKE '%"failed":1%' AND status NOT LIKE '%"skipped":true%'))`, true
+	case "skipped", "skip":
+		return `status LIKE '%"skipped":true%'`, true
 	}
 	return "", false
 }
@@ -436,7 +481,7 @@ func isStuckJobStatus(statusJSON string) bool {
 	if err := json.Unmarshal([]byte(statusJSON), &status); err != nil {
 		return false
 	}
-	return status.Succeeded == 0 && status.Failed == 0
+	return !status.Skipped && status.Succeeded == 0 && status.Failed == 0
 }
 
 // GetJobProjectId returns only the project_id for a job by name, avoiding the

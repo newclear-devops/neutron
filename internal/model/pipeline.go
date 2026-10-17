@@ -20,6 +20,7 @@ func ResolveJob(repo, def Pipeline, name string) (Job, bool) {
 
 type Job struct {
 	Image     string     `yaml:"image"`
+	Parallel  bool       `yaml:"parallel,omitempty"`
 	Trigger   []string   `yaml:"trigger"`
 	Steps     []Step     `yaml:"steps"`
 	Resources *Resources `yaml:"resources,omitempty"`
@@ -39,14 +40,15 @@ type Notify struct {
 // Steps are not stored either — the runner reads neutron.yaml from the same
 // immutable commit, so the same file is reproduced exactly.
 type JobSpec struct {
-	Platform     string            `json:"platform"`               // GitLab / Codeup
-	JobName      string            `json:"job_name"`               // pipeline job key (e.g. "build")
+	Platform     string            `json:"platform"` // GitLab / Codeup
+	JobName      string            `json:"job_name"` // pipeline job key (e.g. "build")
 	Image        string            `json:"image"`
+	Parallel     bool              `json:"parallel,omitempty"`
 	Resources    *Resources        `json:"resources,omitempty"`
-	ProjectId    string            `json:"project_id"`             // RunnerConfig.ProjectId (numeric string)
+	ProjectId    string            `json:"project_id"` // RunnerConfig.ProjectId (numeric string)
 	CommitSha    string            `json:"commit_sha"`
 	ReportSha    string            `json:"report_sha"`
-	Trigger      string            `json:"trigger"`                // PUSH / MR / TAG
+	Trigger      string            `json:"trigger"` // PUSH / MR / TAG
 	GitRepoUrl   string            `json:"git_repo_url"`
 	TargetBranch string            `json:"target_branch,omitempty"`
 	CodeRef      string            `json:"code_ref,omitempty"`

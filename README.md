@@ -208,6 +208,7 @@ jobs:
     image: alpine:latest
     trigger:
       - TAG
+    parallel: true  # Optional; allow overlapping runs (default: false)
     steps:
       - name: deploy
         cmd: echo "deploying..."
@@ -220,10 +221,15 @@ jobs:
 | `jobs.<name>` | Job identifier, used in the K8s Job name |
 | `image` | Docker image for the pipeline container |
 | `trigger` | List of trigger types that activate this job: `MR`, `TAG`, `PUSH` |
+| `parallel` | Allow concurrent runs for the same project and job key; defaults to `false` |
 | `steps[].name` | Step name, reported as commit status context |
 | `steps[].cmd` | Shell command to execute (runs via `sh -c`, supports pipes, redirects, `&&`) |
 
 Steps run sequentially. If a step fails, all subsequent steps are marked as failed and the process exits.
+
+By default, Neutron skips a webhook, API trigger, or rerun when the same project already has an unfinished run of that job key. The skipped trigger is recorded with status `skipped` and does not create a Kubernetes Job. Set `parallel: true` on the effective job definition to allow overlapping runs. For `/api/trigger`, the repository job definition takes precedence; if that job key is absent, the global default pipeline supplies the definition. A repository's own job definition replaces the default job as a whole, including its `parallel` setting. Webhooks use the repository pipeline, or the whole default pipeline only when the repository has no `neutron.yaml`.
+
+Concurrency checks include Kubernetes Jobs that are waiting for a Pod to start. The lock, database lookup, Kubernetes status checks, and create operation share a 30-second deadline. If Neutron cannot acquire the lock, read the database, or confirm an existing Job's Kubernetes state, the trigger fails without creating another run; trigger API requests return HTTP 503 for these failures. If a run must be repeated while one is active, kill the active run first.
 
 ### Image requirements
 

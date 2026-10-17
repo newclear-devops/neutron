@@ -10,6 +10,7 @@ func TestIsStuckJobStatus(t *testing.T) {
 	terminalSuccess := mustJSON(t, JobStatus{Succeeded: 1})
 	terminalFail := mustJSON(t, JobStatus{Failed: 1})
 	active := mustJSON(t, JobStatus{Active: 1})
+	skipped := mustJSON(t, JobStatus{Skipped: true})
 
 	cases := []struct {
 		name  string
@@ -21,6 +22,7 @@ func TestIsStuckJobStatus(t *testing.T) {
 		{"zero-value status is stuck", `{}`, true},
 		{"succeeded status is terminal", terminalSuccess, false},
 		{"failed status is terminal", terminalFail, false},
+		{"skipped status is not stuck", skipped, false},
 		{"corrupted non-empty json is not stuck", `{not-json`, false},
 	}
 	for _, tc := range cases {
@@ -67,10 +69,23 @@ func TestStatusSearchClause(t *testing.T) {
 				mustJSON(t, JobStatus{Active: 1}),
 				mustJSON(t, JobStatus{Succeeded: 1}),
 				mustJSON(t, JobStatus{Failed: 1}),
+				mustJSON(t, JobStatus{Skipped: true}),
 				// Deliberately loose on the negated side: any occurrence of the
 				// flag means there is activity, so the run is not pending.
 				mustJSON(t, JobStatus{Active: 10}),
 			},
+		},
+		{
+			word:    "skipped",
+			wantOK:  true,
+			matches: []string{mustJSON(t, JobStatus{Skipped: true})},
+			misses:  []string{"", mustJSON(t, JobStatus{Active: 1})},
+		},
+		{
+			word:    "skip",
+			wantOK:  true,
+			matches: []string{mustJSON(t, JobStatus{Skipped: true})},
+			misses:  []string{"", mustJSON(t, JobStatus{Succeeded: 1})},
 		},
 		{word: "order-service", wantOK: false},
 		{word: "", wantOK: false},

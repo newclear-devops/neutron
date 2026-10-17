@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
 	"gorm.io/gorm"
+	batchv1 "k8s.io/api/batch/v1"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -596,9 +597,16 @@ func (s *Server) handleRerun(c *gin.Context) {
 	}
 
 	notify := parseNotify(dbJob.Notify)
-	createdName, err := s.createJobFromSpec(dbJob.ProjectId, spec, notify)
+	jobManifest := s.launcherFromSpec(spec).CreateJob(s.config.Host)
+	createdName, skipped, err := s.launchJobWithConcurrency(dbJob.ProjectId, spec.JobName, spec.Parallel, jobManifest.Name, func(ctx context.Context) (string, error) {
+		return s.createJobFromSpec(ctx, dbJob.ProjectId, spec, notify, jobManifest)
+	})
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("failed to rerun job: %v", err)})
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": fmt.Sprintf("failed to rerun job: %v", err)})
+		return
+	}
+	if skipped {
+		c.JSON(http.StatusOK, gin.H{"status": "skipped", "skipped": true, "reason": "another run of this job is still running"})
 		return
 	}
 
@@ -745,6 +753,7 @@ func (s *Server) handleWebhook(c *gin.Context) {
 	log.Printf("webhook %s: trigger=%s, resolved pipeline defines %d job(s): %v", id, ph.trigger, len(ph.pipeline.Jobs), jobNames)
 
 	var jobs []string
+	skippedJobs := make([]string, 0)
 	for jobName, job := range ph.pipeline.Jobs {
 		if !isValidTrigger(ph.trigger, job.Trigger) {
 			log.Printf("webhook %s: skipping job %q — trigger %s not in %v", id, jobName, ph.trigger, job.Trigger)
@@ -756,6 +765,7 @@ func (s *Server) handleWebhook(c *gin.Context) {
 			Platform:     platform,
 			JobName:      jobName,
 			Image:        job.Image,
+			Parallel:     job.Parallel,
 			Resources:    job.Resources,
 			ProjectId:    strconv.Itoa(ph.projectId),
 			CommitSha:    ph.codeSha,
@@ -768,10 +778,18 @@ func (s *Server) handleWebhook(c *gin.Context) {
 			QueryParams:  firstQueryValues(c.Request.URL.Query()),
 		}
 
-		createdName, err := s.createJobFromSpec(id, spec, job.Notify)
+		jobManifest := s.launcherFromSpec(spec).CreateJob(s.config.Host)
+		createdName, skipped, err := s.launchJobWithConcurrency(id, jobName, job.Parallel, jobManifest.Name, func(ctx context.Context) (string, error) {
+			return s.createJobFromSpec(ctx, id, spec, job.Notify, jobManifest)
+		})
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
 			return
+		}
+		if skipped {
+			skippedJobs = append(skippedJobs, jobName)
+			log.Printf("webhook %s: skipped job %q because another run is active", id, jobName)
+			continue
 		}
 		jobs = append(jobs, createdName)
 
@@ -788,7 +806,7 @@ func (s *Server) handleWebhook(c *gin.Context) {
 	if len(jobs) == 0 {
 		log.Printf("webhook %s: no jobs launched — none of %v matched trigger %s", id, jobNames, ph.trigger)
 	}
-	c.JSON(http.StatusOK, gin.H{"status": "ok", "pipeline": ph.pipeline, "jobs": jobs})
+	c.JSON(http.StatusOK, gin.H{"status": "ok", "pipeline": ph.pipeline, "jobs": jobs, "skipped": skippedJobs})
 }
 
 // launcherFromSpec rebuilds the RunnerConfig + extra env from a JobSpec and
@@ -835,22 +853,22 @@ func (s *Server) launcherFromSpec(spec model.JobSpec) *launcher.Launcher {
 // createJobFromSpec builds the K8s Job from a JobSpec (via launcherFromSpec),
 // creates it, and persists the DB row carrying the same spec (so the job can be
 // rerun again). Returns the generated K8s Job name.
-func (s *Server) createJobFromSpec(projectId string, spec model.JobSpec, notify *model.Notify) (string, error) {
-	l := s.launcherFromSpec(spec)
+func (s *Server) createJobFromSpec(ctx context.Context, projectId string, spec model.JobSpec, notify *model.Notify, job *batchv1.Job) (string, error) {
 	jobClient := s.clientSet.BatchV1().Jobs(s.config.Kubernetes.Namespace)
-	createdJob, err := jobClient.Create(context.Background(), l.CreateJob(s.config.Host), metav1.CreateOptions{})
-	if err != nil {
-		return "", err
-	}
-	if err := s.repo.AddJob(internal.PipelineJob{
+	if err := s.repo.AddJobContext(ctx, internal.PipelineJob{
 		ProjectId: projectId,
-		Name:      createdJob.Name,
+		Name:      job.Name,
 		Status:    "",
 		Notify:    marshalNotify(notify),
 		Spec:      marshalSpec(spec),
 		JobName:   spec.JobName,
 		Params:    marshalParams(paramsFromSpec(spec)),
 	}); err != nil {
+		return "", err
+	}
+	createdJob, err := jobClient.Create(ctx, job, metav1.CreateOptions{})
+	if err != nil {
+		s.recordJobCreateFailure(job.Name, err)
 		return "", err
 	}
 	return createdJob.Name, nil
@@ -982,44 +1000,49 @@ func (s *Server) handleTrigger(c *gin.Context) {
 		extraEnv = append(extraEnv, v1.EnvVar{Name: key, Value: value})
 	}
 
-	// Create K8s Job
+	// Create K8s Job under the same per-project/job-key concurrency guard as
+	// webhooks and reruns.
 	l := s.buildLauncher(runnerConfig, job.Image, job.Resources, platform, extraEnv)
-	jobClient := s.clientSet.BatchV1().Jobs(s.config.Kubernetes.Namespace)
-	createdJob, err := jobClient.Create(context.Background(), l.CreateJob(s.config.Host), metav1.CreateOptions{})
+	jobManifest := l.CreateJob(s.config.Host)
+	notifyJSON := marshalNotify(job.Notify)
+	createdName, skipped, err := s.launchJobWithConcurrency(project.Id, req.JobName, job.Parallel, jobManifest.Name, func(ctx context.Context) (string, error) {
+		jobClient := s.clientSet.BatchV1().Jobs(s.config.Kubernetes.Namespace)
+		if err := s.repo.AddJobContext(ctx, internal.PipelineJob{
+			ProjectId: project.Id,
+			Name:      jobManifest.Name,
+			Status:    "",
+			Notify:    notifyJSON,
+			// API-triggered jobs remain non-rerunnable; Params preserves their context.
+			JobName: req.JobName,
+			Params:  marshalParams(model.JobParams{Ref: req.Ref, CommitSha: req.Ref, Trigger: "API", Env: req.Env}),
+		}); err != nil {
+			return "", fmt.Errorf("failed to save job to database: %w", err)
+		}
+		createdJob, err := jobClient.Create(ctx, jobManifest, metav1.CreateOptions{})
+		if err != nil {
+			s.recordJobCreateFailure(jobManifest.Name, err)
+			return "", err
+		}
+		return createdJob.Name, nil
+	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to create job: %v", err)})
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": fmt.Sprintf("failed to create job: %v", err)})
+		return
+	}
+	if skipped {
+		c.JSON(http.StatusOK, gin.H{"status": "skipped", "skipped": true, "reason": "another run of this job is still running"})
 		return
 	}
 
-	// Save job to database
-	if err := s.repo.AddJob(internal.PipelineJob{
-		ProjectId: project.Id,
-		Name:      createdJob.Name,
-		Status:    "",
-		Notify:    marshalNotify(job.Notify),
-		// No Spec: API-triggered jobs are not rerunnable (they bypass the
-		// trigger/platform-report behaviour a rerun would have to reproduce).
-		// Params is what makes the ref and env visible on the status page.
-		JobName: req.JobName,
-		Params: marshalParams(model.JobParams{
-			Ref:       req.Ref,
-			CommitSha: req.Ref,
-			Trigger:   "API",
-			Env:       req.Env,
-		}),
-	}); err != nil {
-		log.Printf("failed to save job to database: %v", err)
-	}
-
 	// Send notifications
-	statusUrl := fmt.Sprintf("%s/#/status/%s", s.config.Host, createdJob.Name)
+	statusUrl := fmt.Sprintf("%s/#/status/%s", s.config.Host, createdName)
 	title := "🚀 流水线触发通知 (API)"
 	content := fmt.Sprintf("📂 项目: %s\n📋 作业: %s\n🏷️ Ref: %s\n🔗 查看: %s", req.RepoUrl, req.JobName, req.Ref, statusUrl)
 	s.sendJobNotifications(job.Notify, title, content)
 
 	c.JSON(http.StatusOK, gin.H{
 		"status":   "ok",
-		"job_name": createdJob.Name,
+		"job_name": createdName,
 		"job_url":  statusUrl,
 	})
 }

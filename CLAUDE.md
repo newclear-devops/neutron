@@ -132,6 +132,14 @@ No automatic timeout is used instead: pipeline durations vary too much for any g
 
 Like the rest of the API, the endpoint has no access control — `Rerun` is already exposed at the same trust level.
 
+### Job Concurrency
+
+Each job accepts `parallel: true` in `neutron.yaml`; omitted/false means only one unfinished run per **project + logical job key**. This applies to webhooks, `/api/trigger`, and reruns. A skipped trigger is saved as a completed DB history row whose status contains `skipped: true`; no Kubernetes Job or trigger/completion notification is created. The trigger API returns `{"status":"skipped","skipped":true,...}`; webhook responses include skipped logical job keys in `skipped` while processing other matching jobs normally.
+
+The launch decision is guarded by a MySQL named lock keyed by project and job key, held only across checking and creating/recording a run. Candidate rows are uncompleted DB jobs for that project/key without a recency cutoff. Each candidate is checked in Kubernetes: a missing Job or a Job with a terminal `Complete`/`Failed` condition does not block; any existing nonterminal Job blocks, including Jobs with no active Pod yet. The lock, DB lookup, Kubernetes checks, and create operation share a 30-second deadline. Database, lock, or Kubernetes read errors fail the current trigger closed (trigger API requests return HTTP 503). On an ambiguous K8s create error, the prewritten DB row stays uncompleted unless Kubernetes confirms the Job is absent, so later checks do not accidentally launch a duplicate.
+
+`parallel` comes from the effective job definition: a repository job replaces a same-key default-pipeline job wholesale; `/api/trigger` falls back to the default pipeline when the repository file lacks that key, and repository-less jobs use the whole default pipeline. Webhooks use the repository pipeline (or the whole default pipeline only when the repository has no `neutron.yaml`). Webhook-created job specs persist the `parallel` setting so reruns use the same concurrency policy as the original run. If a same-key job is still running, users must kill it before a nonparallel rerun can start.
+
 ### Notifications
 
 Notifications are configured **per job** in the repository's `neutron.yaml`, under each job's optional `notify` block:

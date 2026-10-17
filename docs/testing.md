@@ -291,13 +291,13 @@ jobs:
 
 ---
 
-### 场景 12：并发 MR
+### 场景 12：多个 MR 与 Job 并发策略
 
-**目的：** 验证同时存在多个 MR 时，各自独立触发流水线
+**目的：** 验证并发限制按项目和逻辑 job key 生效，而不是按 MR 数量生效
 
-**操作：** 同时创建两个 MR
+**操作：** 同一项目中保持一个 MR 的 job 运行，再创建另一个会触发相同 job key 的 MR；随后用 `parallel: true` 重复验证。
 
-**预期行为：** 每个 MR 触发独立的 K8s Job，互不影响
+**预期行为：** 默认配置下，第二次触发记为 `skipped`，不会创建第二个 K8s Job；设置 `parallel: true` 后允许两个 K8s Job 同时运行。不同 job key 仍可并行。
 
 ---
 
@@ -321,7 +321,7 @@ git push --force origin main
 
 **操作：** 在 GitLab Webhook 设置中点击 "Resend" 重放事件
 
-**预期行为：** 触发新的流水线执行
+**预期行为：** 如果原 job 仍未结束，重放会记录为 `skipped`，Recent Jobs 中能看到跳过记录，且不会创建第二个 K8s Job；如果原 job 已结束，则按正常规则触发新流水线。
 
 ---
 
@@ -333,6 +333,20 @@ git push --force origin main
 - API Server 返回错误（GitLab API 返回 404）
 - 不创建 K8s Job
 - 返回 HTTP 400 给 GitLab
+
+---
+
+### 场景 16：重复触发、rerun 与失败关闭
+
+**目的：** 验证 webhook、手动 API trigger 和 rerun 共用同一并发规则。
+
+**操作：**
+1. 让一个 job 持续运行，再通过 webhook 重放或 `/api/trigger` 触发同一项目、同一 job key。
+2. 对该 job 使用 Rerun；确认该次请求也被跳过。
+3. 检查 Recent Jobs 和项目历史中的 `skipped` 记录及 API 响应。
+4. 在隔离测试环境中让 API 无法读取已有 K8s Job，再尝试触发同一 job。
+
+**预期行为：** 前三步都记录 `skipped` 且不创建新 K8s Job；最后一步触发失败且不创建新 job。恢复 Kubernetes 访问后可正常重试。需要重跑时先手动 Kill 现有 job。
 
 ---
 
