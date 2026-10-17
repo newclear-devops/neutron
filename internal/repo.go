@@ -481,7 +481,7 @@ func isStuckJobStatus(statusJSON string) bool {
 	if err := json.Unmarshal([]byte(statusJSON), &status); err != nil {
 		return false
 	}
-	return status.Succeeded == 0 && status.Failed == 0
+	return !status.Skipped && status.Succeeded == 0 && status.Failed == 0
 }
 
 // GetJobProjectId returns only the project_id for a job by name, avoiding the
