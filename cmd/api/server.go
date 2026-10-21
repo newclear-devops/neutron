@@ -85,6 +85,7 @@ func (s *Server) handleConfig(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"logUrl":       s.config.LogUrl,
+		"slowdogUrl":   s.config.SlowdogUrl,
 		"namespace":    s.config.Kubernetes.Namespace,
 		"codebaseUrls": codebaseUrls,
 	})

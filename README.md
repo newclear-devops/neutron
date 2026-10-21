@@ -56,6 +56,10 @@ salt: "your-random-salt"
 # {namespace} and {podName} are replaced at runtime
 # log_url: "https://log.internal.com/view?namespace={namespace}&pod={podName}"
 
+# Optional: slowdog log platform base URL. When set, the status page shows a
+# per-pod "日志" link to {slowdog_url}?pod_name={podName}
+# slowdog_url: "http://slowdog.devops.develop.cluster.apps.sz.test.csdc"
+
 codebase:
   GitLab:
     url: "https://gitlab.example.com"
@@ -142,6 +146,10 @@ database: "user:password@tcp(<mysql-host>:3306)/neutron?charset=utf8mb4&parseTim
 salt: "your-random-salt"
 
 log_url: "https://log.internal.com/view?namespace={namespace}&pod={podName}"
+
+# Optional: slowdog log platform base URL. When set, the status page shows a
+# per-pod "日志" link to {slowdog_url}?pod_name={podName}
+# slowdog_url: "http://slowdog.devops.develop.cluster.apps.sz.test.csdc"
 
 codebase:
   GitLab:

@@ -6,7 +6,8 @@ type Config struct {
 	Host       string              `yaml:"host"`
 	Port       int                 `yaml:"port"`
 	Database   string              `yaml:"database"`
-	LogUrl     string              `yaml:"log_url,omitempty"` // 日志平台链接模板，支持 {namespace} 和 {podId} 占位符
+	LogUrl     string              `yaml:"log_url,omitempty"`      // 日志平台链接模板，支持 {namespace} 和 {podId} 占位符
+	SlowdogUrl string              `yaml:"slowdog_url,omitempty"`  // slowdog 日志平台基础地址，配置后 pod 列表显示日志链接
 	BaseConfig map[string]CodeBase `yaml:"codebase"`
 	// PodCodeBase 覆盖 K8s Pod 内 runner 访问 codebase 的地址（当 Pod 网络与宿主机不同时使用）
 	PodCodeBase map[string]CodeBase `yaml:"pod_codebase,omitempty"`

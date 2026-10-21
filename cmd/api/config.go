@@ -85,6 +85,7 @@ func applyEnvOverrides(config *model.Config) {
 	})
 	envStr("NEUTRON_DATABASE", func(v string) { config.Database = v })
 	envStr("NEUTRON_LOG_URL", func(v string) { config.LogUrl = v })
+	envStr("NEUTRON_SLOWDOG_URL", func(v string) { config.SlowdogUrl = v })
 	envStr("NEUTRON_KUBE_NAMESPACE", func(v string) { config.Kubernetes.Namespace = v })
 	envStr("NEUTRON_KUBE_CONFIG", func(v string) { config.Kubernetes.KubeConfig = v })
 	envStr("NEUTRON_GIT_PRIVATE_KEY", func(v string) { config.Kubernetes.GitPrivateKey = v })

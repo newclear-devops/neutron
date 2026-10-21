@@ -122,10 +122,15 @@
            outside the table. The variable keeps the two rules in sync. */
         .card { --pod-status-col: 120px; }
         .pod-table th:last-child, .pod-table td:last-child { width: var(--pod-status-col); }
+        /* With the slowdog 日志 column present, the Status column is the middle
+           one; keep its fixed width and let the 日志 column size to its content. */
+        .card.has-slowdog .pod-table th:nth-child(2), .card.has-slowdog .pod-table td:nth-child(2) { width: var(--pod-status-col); }
+        .card.has-slowdog .pod-table th:last-child, .card.has-slowdog .pod-table td:last-child { width: auto; }
         .pod-actions {
             display: grid; grid-template-columns: 1fr var(--pod-status-col);
             gap: 12px; align-items: center; margin-top: 16px;
         }
+        .card.has-slowdog .pod-actions { grid-template-columns: 1fr var(--pod-status-col) auto; }
         .pod-actions .pa-left { display: flex; gap: 12px; align-items: center; }
         /* Matches the cells' 12px left padding, so the button lines up with the
            "Status" header and the phase text rather than the column's edge. */
@@ -329,11 +334,12 @@
 <script>
 (function() {
     var app = document.getElementById('app');
-    var appConfig = { logUrl: '', namespace: 'default', codebaseUrls: {} };
+    var appConfig = { logUrl: '', slowdogUrl: '', namespace: 'default', codebaseUrls: {} };
 
     // --- Config ---
     fetch('/api/config').then(function(r){ return r.json(); }).then(function(c){
         appConfig.logUrl = c.logUrl || '';
+        appConfig.slowdogUrl = c.slowdogUrl || '';
         appConfig.namespace = c.namespace || 'default';
         appConfig.codebaseUrls = c.codebaseUrls || {};
     });
@@ -341,6 +347,12 @@
     function buildLogUrl(podId) {
         if (!appConfig.logUrl) return '#';
         return appConfig.logUrl.replace('{namespace}', encodeURIComponent(appConfig.namespace)).replace('{podId}', encodeURIComponent(podId));
+    }
+
+    // slowdog 日志平台链接：{slowdogUrl}?pod_name={podName}
+    function buildSlowdogUrl(podName) {
+        if (!appConfig.slowdogUrl) return '#';
+        return appConfig.slowdogUrl + '?pod_name=' + encodeURIComponent(podName);
     }
 
     // Job and pod names end with a run timestamp in one of the layouts that have
@@ -2023,15 +2035,19 @@
             var uid = pod.metadata ? pod.metadata.uid : '';
             var phase = pod.status ? pod.status.phase : '';
             if (appConfig.logUrl) {
-                podsHtml += '<tr><td><a href="javascript:void(0)" onclick="openPodLog(\'' + escAttr(name) + '\',\'' + escAttr(uid) + '\')">' + escHtml(name) + '</a></td><td>' + escHtml(phase) + '</td></tr>';
+                podsHtml += '<tr><td><a href="javascript:void(0)" onclick="openPodLog(\'' + escAttr(name) + '\',\'' + escAttr(uid) + '\')">' + escHtml(name) + '</a></td><td>' + escHtml(phase) + '</td>';
             } else {
-                podsHtml += '<tr><td>' + escHtml(name) + '</td><td>' + escHtml(phase) + '</td></tr>';
+                podsHtml += '<tr><td>' + escHtml(name) + '</td><td>' + escHtml(phase) + '</td>';
             }
+            if (appConfig.slowdogUrl) {
+                podsHtml += '<td><a target="_blank" href="' + escAttr(buildSlowdogUrl(name)) + '">日志</a></td>';
+            }
+            podsHtml += '</tr>';
         }
 
         app.innerHTML =
             '<p class="page-title">Job &mdash; <b>' + escHtml(jobName) + '</b></p>' +
-            '<div class="card">' +
+            '<div class="card' + (appConfig.slowdogUrl ? ' has-slowdog' : '') + '">' +
                 '<div class="meta">' +
                     '<div>A <b>' + escHtml(webhookType) + '</b> &rarr; <b>' + escHtml(triggerType) + '</b> pipeline</div>' +
                     '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
@@ -2045,7 +2061,7 @@
                     '<div class="stat">Failed: <b>' + failed + '</b></div>' +
                 '</div>' +
                 (items.length > 0 ?
-                    '<table class="pod-table"><thead><tr><th>Pod</th><th>Status</th></tr></thead><tbody>' + podsHtml + '</tbody></table>'
+                    '<table class="pod-table"><thead><tr><th>Pod</th><th>Status</th>' + (appConfig.slowdogUrl ? '<th>日志</th>' : '') + '</tr></thead><tbody>' + podsHtml + '</tbody></table>'
                     : '<p style="color:#999;margin-top:12px">No pods found.</p>') +
                 (appConfig.logUrl ? '<p class="log-hint">Click pod name to view logs on external platform</p>' : '') +
                 (stuck ? '<p style="color:#b06000;margin-top:12px">The Kubernetes Job for this run has already been cleaned up, so no further status will arrive. Its outcome is unknown.</p>' : '') +
