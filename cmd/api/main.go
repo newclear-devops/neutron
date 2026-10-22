@@ -55,6 +55,12 @@ func main() {
 		log.Printf("finished pipeline jobs are kept indefinitely (job-ttl-minutes disabled); clean them up manually")
 	}
 
+	if deadline := config.Kubernetes.EffectiveJobActiveDeadlineSeconds(); deadline != nil {
+		log.Printf("pipeline jobs are terminated by Kubernetes after running %s", time.Duration(*deadline)*time.Second)
+	} else {
+		log.Printf("pipeline jobs have no run-time cap (job-active-deadline-minutes disabled); a wedged run must be killed manually")
+	}
+
 	repo := internal.NewRepository(config)
 
 	// Seed snippet cache from GitLab on startup (non-fatal on failure).

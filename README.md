@@ -92,6 +92,10 @@ kubernetes:
   # Job history itself lives in MySQL and is never deleted.
   # Set a negative value to disable cleanup entirely.
   job-ttl-minutes: 480
+  # Optional: maximum run time (minutes) of a single pipeline Job. Kubernetes
+  # terminates a run that is still active after this long and marks it failed.
+  # Default 1440 (24 hours). Set a negative value to disable the cap entirely.
+  job-active-deadline-minutes: 1440
 ```
 
 ### 3. Initialize database
@@ -234,6 +238,8 @@ jobs:
 | `steps[].cmd` | Shell command to execute (runs via `sh -c`, supports pipes, redirects, `&&`) |
 
 Steps run sequentially. If a step fails, all subsequent steps are marked as failed and the process exits.
+
+Every pipeline Job is created with `activeDeadlineSeconds` from `kubernetes.job-active-deadline-minutes` (default 1440 minutes = 24 hours). Kubernetes terminates a run that is still active that long after it started and marks it failed (reason `DeadlineExceeded`); Neutron then closes it out and sends the completion notification. Set a negative value to disable the cap. Stop a run sooner with `Kill` on the status page.
 
 By default, Neutron skips a webhook, API trigger, or rerun when the same project already has an unfinished run of that job key. The skipped trigger is recorded with status `skipped` and does not create a Kubernetes Job. Set `parallel: true` on the effective job definition to allow overlapping runs. For `/api/trigger`, the repository job definition takes precedence; if that job key is absent, the global default pipeline supplies the definition. A repository's own job definition replaces the default job as a whole, including its `parallel` setting. Webhooks use the repository pipeline, or the whole default pipeline only when the repository has no `neutron.yaml`.
 

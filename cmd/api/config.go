@@ -131,6 +131,17 @@ func applyEnvOverrides(config *model.Config) {
 		config.Kubernetes.JobTtlMinutes = &minutes
 	})
 
+	// Maximum run time of one pipeline Job, in minutes. Negative values disable
+	// the cap entirely; invalid input is ignored the same way.
+	envStr("NEUTRON_JOB_ACTIVE_DEADLINE_MINUTES", func(v string) {
+		minutes, err := strconv.Atoi(v)
+		if err != nil {
+			log.Printf("WARNING: ignoring invalid NEUTRON_JOB_ACTIVE_DEADLINE_MINUTES=%q", v)
+			return
+		}
+		config.Kubernetes.JobActiveDeadlineMinutes = &minutes
+	})
+
 	envStr("NEUTRON_SNIPPETS_REPO_URL", func(v string) { config.Snippets.RepoUrl = v })
 	envStr("NEUTRON_SNIPPETS_PLATFORM", func(v string) { config.Snippets.Platform = v })
 	envStr("NEUTRON_SNIPPETS_REF", func(v string) { config.Snippets.Ref = v })
