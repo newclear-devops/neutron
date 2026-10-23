@@ -35,4 +35,36 @@ func TestEffectiveJobTtlSeconds(t *testing.T) {
 	}
 }
 
+func TestEffectiveJobActiveDeadlineSeconds(t *testing.T) {
+	cases := []struct {
+		name    string
+		minutes *int // job-active-deadline-minutes
+		wantNil bool
+		want    int64 // seconds handed to the K8s Job
+	}{
+		{name: "unset falls back to the 24h default", minutes: nil, want: DefaultJobActiveDeadlineMinutes * 60},
+		{name: "configured minutes are converted", minutes: intp(90), want: 90 * 60},
+		{name: "zero means default too", minutes: intp(0), want: DefaultJobActiveDeadlineMinutes * 60},
+		{name: "negative disables the cap", minutes: intp(-1), wantNil: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := KubernetesConfig{JobActiveDeadlineMinutes: tc.minutes}.EffectiveJobActiveDeadlineSeconds()
+			if tc.wantNil {
+				if got != nil {
+					t.Fatalf("active deadline = %ds, want nil (cap disabled)", *got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatalf("active deadline = nil, want %ds", tc.want)
+			}
+			if *got != tc.want {
+				t.Errorf("active deadline = %ds, want %ds", *got, tc.want)
+			}
+		})
+	}
+}
+
 func intp(i int) *int { return &i }

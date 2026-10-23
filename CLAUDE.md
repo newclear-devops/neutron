@@ -87,7 +87,7 @@ Tables auto-migrated by GORM:
 
 ### Configuration
 
-Runtime config is `config.yaml` (gitignored). Shape defined by `internal/model/config.go`: host, port, database (MySQL DSN), salt, log_url (external log platform link template with {namespace} and {podName} placeholders, optional), slowdog_url (slowdog log platform base URL, optional — when set the status page shows a per-pod 日志 link to `{slowdog_url}?pod_name={podName}`), codebase map (url/token/skip_tls_verify per platform: GitLab, Codeup), pod_codebase (pod-side codebase addresses, optional), kubernetes (kube-config path — optional for in-cluster, auto-detected via ServiceAccount; required for out-of-cluster, namespace, git-private-key secret, init-image, checkout-image, image-pull-secrets, **job-ttl-minutes** — see **Job Cleanup (TTL)**, pod-api-url), notify (IM notification config: url, corp_id, app_id, skip_tls_verify), snippets (GitLab-backed snippet store, optional), gateway (codebase API gateway backing the manual trigger toolbar's branch/tag lists, optional), dependency (shared-dependency service backing its DEP_BRANCH dropdown, optional). Most fields can be overridden via environment variables (NEUTRON_*).
+Runtime config is `config.yaml` (gitignored). Shape defined by `internal/model/config.go`: host, port, database (MySQL DSN), salt, log_url (external log platform link template with {namespace} and {podName} placeholders, optional), slowdog_url (slowdog log platform base URL, optional — when set the status page shows a per-pod 日志 link to `{slowdog_url}?pod_name={podName}`), codebase map (url/token/skip_tls_verify per platform: GitLab, Codeup), pod_codebase (pod-side codebase addresses, optional), kubernetes (kube-config path — optional for in-cluster, auto-detected via ServiceAccount; required for out-of-cluster, namespace, git-private-key secret, init-image, checkout-image, image-pull-secrets, **job-ttl-minutes** — see **Job Cleanup (TTL)**, **job-active-deadline-minutes** — see **Killing a Stuck Run (manual)**, pod-api-url), notify (IM notification config: url, corp_id, app_id, skip_tls_verify), snippets (GitLab-backed snippet store, optional), gateway (codebase API gateway backing the manual trigger toolbar's branch/tag lists, optional), dependency (shared-dependency service backing its DEP_BRANCH dropdown, optional). Most fields can be overridden via environment variables (NEUTRON_*).
 
 ### Job Cleanup (TTL)
 
@@ -118,9 +118,30 @@ Before doing that, check whether any row within `ListUncompletedJobs`' 7-day win
 
 ### Killing a Stuck Run (manual)
 
-A run can hang: still active in Kubernetes, never reaching a terminal state (a wedged step, a build that never returns, a Pod that never pulls its image). Neither existing mechanism helps — `TTLSecondsAfterFinished` only applies to Jobs that have **finished**, and the reconciler skips Jobs that are not terminal — so such a run keeps its Pods forever and keeps counting as a running sibling in `handleRunningSiblings`.
+A run can hang: still active in Kubernetes, never reaching a terminal state (a wedged step, a build that never returns, a Pod that never pulls its image). `TTLSecondsAfterFinished` does not help — it only applies to Jobs that have **finished** — and the reconciler skips Jobs that are not terminal, so such a run keeps its Pods forever and keeps counting as a running sibling in `handleRunningSiblings`.
 
-No automatic timeout is used instead: pipeline durations vary too much for any global deadline to be safe, since it would eventually kill a legitimately slow build. Termination stays an explicit, confirmed action from the status page (`Kill`, beside `Rerun`). It is shown only while the run is genuinely active — not for the "stuck, Job already gone" case, where recording a failure would assert an outcome nobody actually knows.
+**Automatic backstop:** every pipeline Job is created with `ActiveDeadlineSeconds` set from `kubernetes.job-active-deadline-minutes` (`NEUTRON_JOB_ACTIVE_DEADLINE_MINUTES`), counted from the Job's start time. Kubernetes terminates the Pods and marks the Job `Failed` with the `DeadlineExceeded` reason; the reconciler then closes the row out and sends the completion notification, exactly as for any other job whose runner never delivered a final report. The deadline also releases the project/job-key concurrency slot such a run would otherwise hold forever. Scheduling and init/checkout time count toward it, so a run stuck before its first step is reclaimed too.
+
+The config unit is **minutes** (easier to reason about); `model.KubernetesConfig.EffectiveJobActiveDeadlineSeconds` converts to the seconds the K8s field requires.
+
+| `job-active-deadline-minutes` | effect |
+|---|---|
+| unset or `0` | default **1440** = 24h (`model.DefaultJobActiveDeadlineMinutes`) |
+| positive N | terminate the run N minutes after it started |
+| negative | disabled — no `ActiveDeadlineSeconds` field is set, nothing is ever terminated automatically |
+
+The default is deliberately far longer than any legitimate pipeline, so it only ever fires on a genuinely wedged run. Setting it very low is safe from the reconciler's point of view (unlike the TTL, a terminated Job is *supposed* to be gone), but it will kill slow-but-healthy builds.
+
+**Stopping a run sooner** stays an explicit, confirmed action from the status page (`Kill`, beside `Rerun`). It is shown only while the run is genuinely active — not for the "stuck, Job already gone" case, where recording a failure would assert an outcome nobody actually knows.
+
+**Runs started before this deadline existed:** `ActiveDeadlineSeconds` is only set on Jobs created by a build that carries it. Backfill hung ones by patching them — Kubernetes then terminates anything already past its deadline (substitute the configured value for `86400`):
+
+```bash
+kubectl get jobs -o name | grep '^job\.batch/neutron-' | \
+  xargs -r -n1 -I{} kubectl patch {} --type=merge -p '{"spec":{"activeDeadlineSeconds":86400}}'
+```
+
+If a cluster rejects the patch, terminate those runs individually with `Kill` on the status page instead — it records the same failed outcome and notification.
 
 `POST /api/jobs/:jobName/kill` (`cmd/api/kill.go`):
 

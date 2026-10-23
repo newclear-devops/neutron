@@ -9,20 +9,20 @@ import (
 	"neutron/internal/model"
 )
 
-// newTestLauncher builds a Launcher with only the fields the TTL behaviour
-// depends on.
-func newTestLauncher(ttl *int32) *Launcher {
+// newTestLauncher builds a Launcher with only the fields the retention and
+// run-time-cap behaviour depend on.
+func newTestLauncher(ttl *int32, activeDeadline *int64) *Launcher {
 	return NewLauncher(
 		"default",
 		model.RunnerConfig{JobName: "build", Trigger: "PUSH", CommitSha: "abc123", GitRepoUrl: "git@gitlab.example.com:g/p.git"},
 		"runner:latest", "checkout:latest", "maven:3.9", "git-ssh-secret",
-		nil, "GitLab", "", ttl, nil,
+		nil, "GitLab", "", ttl, activeDeadline, nil,
 		v1.EnvVar{Name: "RUNNER_PLATFORM", Value: "gitlab"},
 	)
 }
 
 func TestCreateJobTtlSeconds(t *testing.T) {
-	job := newTestLauncher(ttlPtr(600)).CreateJob("http://neutron.local")
+	job := newTestLauncher(ttlPtr(600), nil).CreateJob("http://neutron.local")
 	if job.Spec.TTLSecondsAfterFinished == nil {
 		t.Fatal("TTLSecondsAfterFinished is nil, want 600")
 	}
@@ -34,13 +34,35 @@ func TestCreateJobTtlSeconds(t *testing.T) {
 // A nil TTL must leave the field unset rather than writing 0, which K8s reads as
 // "delete immediately after completion".
 func TestCreateJobTtlDisabledLeavesFieldUnset(t *testing.T) {
-	job := newTestLauncher(nil).CreateJob("http://neutron.local")
+	job := newTestLauncher(nil, nil).CreateJob("http://neutron.local")
 	if job.Spec.TTLSecondsAfterFinished != nil {
 		t.Errorf("TTLSecondsAfterFinished = %d, want nil (no cleanup)", *job.Spec.TTLSecondsAfterFinished)
 	}
 }
 
+// The configured cap must reach the K8s Job verbatim.
+func TestCreateJobActiveDeadline(t *testing.T) {
+	job := newTestLauncher(ttlPtr(600), deadlinePtr(86400)).CreateJob("http://neutron.local")
+	if job.Spec.ActiveDeadlineSeconds == nil {
+		t.Fatal("ActiveDeadlineSeconds is nil, want 86400")
+	}
+	if got := *job.Spec.ActiveDeadlineSeconds; got != 86400 {
+		t.Errorf("ActiveDeadlineSeconds = %d, want 86400 (24h)", got)
+	}
+}
+
+// A nil cap must leave the field unset rather than writing 0, which K8s would
+// read as "already past its deadline".
+func TestCreateJobActiveDeadlineDisabledLeavesFieldUnset(t *testing.T) {
+	job := newTestLauncher(ttlPtr(600), nil).CreateJob("http://neutron.local")
+	if job.Spec.ActiveDeadlineSeconds != nil {
+		t.Errorf("ActiveDeadlineSeconds = %d, want nil (no cap)", *job.Spec.ActiveDeadlineSeconds)
+	}
+}
+
 func ttlPtr(i int32) *int32 { return &i }
+
+func deadlinePtr(i int64) *int64 { return &i }
 
 // jobNamePattern describes the generated name: an optional project segment, the
 // job key, then the fixed trailing -<YYYYMMDD-HHMMSS>-<4-hex>.

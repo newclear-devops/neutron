@@ -1062,6 +1062,7 @@ func (s *Server) buildLauncher(rc model.RunnerConfig, image string, resources *m
 		platform,
 		s.config.Kubernetes.PodApiUrl,
 		s.config.Kubernetes.EffectiveJobTtlSeconds(),
+		s.config.Kubernetes.EffectiveJobActiveDeadlineSeconds(),
 		resources,
 		extraEnv...,
 	)

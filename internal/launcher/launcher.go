@@ -27,9 +27,19 @@ type Launcher struct {
 	JobTtlSeconds    *int32           // finished-Job retention handed to K8s as TTLSecondsAfterFinished; nil = never auto-cleanup
 	ExtraEnv         []v1.EnvVar      // platform-specific env vars (e.g. TARGET_BRANCH for GitLab MR)
 	Resources        *model.Resources // job-level resource requirements
+
+	// JobActiveDeadlineSeconds caps how long one run may stay active, handed to
+	// K8s as ActiveDeadlineSeconds; nil leaves the field unset, i.e. no cap.
+	// K8s counts from the Job's start time, terminates the Pods once it passes,
+	// and marks the Job Failed with the DeadlineExceeded reason — which the
+	// reconciler then closes out and notifies like any other job whose runner
+	// never reported a final status. Without it a wedged run keeps its Pods (and
+	// its project/job-key concurrency slot) forever: the TTL only fires on
+	// finished Jobs and Kill is a manual action.
+	JobActiveDeadlineSeconds *int64
 }
 
-func NewLauncher(namespace string, runnerConfig model.RunnerConfig, initImage string, checkoutImage string, baseImage string, keyName string, imagePullSecrets []string, platform string, podApiUrl string, jobTtlSeconds *int32, resources *model.Resources, extraEnv ...v1.EnvVar) *Launcher {
+func NewLauncher(namespace string, runnerConfig model.RunnerConfig, initImage string, checkoutImage string, baseImage string, keyName string, imagePullSecrets []string, platform string, podApiUrl string, jobTtlSeconds *int32, jobActiveDeadlineSeconds *int64, resources *model.Resources, extraEnv ...v1.EnvVar) *Launcher {
 	return &Launcher{
 		Namespace:        namespace,
 		RunnerConfig:     runnerConfig,
@@ -43,6 +53,8 @@ func NewLauncher(namespace string, runnerConfig model.RunnerConfig, initImage st
 		JobTtlSeconds:    jobTtlSeconds,
 		ExtraEnv:         extraEnv,
 		Resources:        resources,
+
+		JobActiveDeadlineSeconds: jobActiveDeadlineSeconds,
 	}
 }
 
@@ -113,6 +125,11 @@ func (l *Launcher) CreateJob(neutronHost string) *batchv1.Job {
 			// No retries: re-running would repeat side-effecting steps
 			// (deploys), and the runner already reported the failure.
 			BackoffLimit: int32Ptr(0),
+			// Hard cap on how long this run may stay active. K8s terminates
+			// the Pods and fails the Job with DeadlineExceeded; the reconciler
+			// then records the outcome, so no neutron-side timeout loop is
+			// needed. Nil leaves the field unset: no cap at all.
+			ActiveDeadlineSeconds: l.JobActiveDeadlineSeconds,
 			// K8s deletes the Job this long after it reaches a terminal state,
 			// cascading to its Pods. Without it finished Jobs accumulate
 			// forever. See model.KubernetesConfig.EffectiveJobTtlSeconds for

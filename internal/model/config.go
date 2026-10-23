@@ -38,6 +38,13 @@ type KubernetesConfig struct {
 	// the K8s TTL controller deletes it (which cascades to its Pods).
 	// Unset → DefaultJobTtlMinutes; a negative value disables the cleanup.
 	JobTtlMinutes *int `yaml:"job-ttl-minutes,omitempty"`
+	// JobActiveDeadlineMinutes is the maximum run time of a pipeline Job, in
+	// minutes: Kubernetes terminates the Job's Pods and fails the Job with the
+	// DeadlineExceeded reason this long after it started, so a wedged run can
+	// neither keep its Pods nor hold its project/job-key concurrency slot
+	// forever. Unset → DefaultJobActiveDeadlineMinutes; a negative value
+	// disables the cap.
+	JobActiveDeadlineMinutes *int `yaml:"job-active-deadline-minutes,omitempty"`
 }
 
 // DefaultJobTtlMinutes is the retention applied to finished pipeline Jobs when
@@ -69,8 +76,36 @@ func (k KubernetesConfig) EffectiveJobTtlSeconds() *int32 {
 	return int32Ptr(seconds)
 }
 
+// DefaultJobActiveDeadlineMinutes is the run-time cap applied to pipeline Jobs
+// when kubernetes.job-active-deadline-minutes is not configured: 24 hours. It is
+// deliberately far longer than any legitimate pipeline, so it only ever fires on
+// a run that is genuinely wedged — a build that never returns, a Pod that never
+// pulls its image, or a step that hangs before reporting anything.
+const DefaultJobActiveDeadlineMinutes = 24 * 60
+
+// EffectiveJobActiveDeadlineSeconds resolves the cap stamped on every created
+// pipeline Job, in the seconds unit the K8s field requires. Returns nil —
+// leaving the field unset, i.e. no cap at all — when disabled via a negative
+// value.
+func (k KubernetesConfig) EffectiveJobActiveDeadlineSeconds() *int64 {
+	// An explicit 0 also means "use the default" rather than "no deadline",
+	// matching how job-ttl-minutes treats it.
+	if k.JobActiveDeadlineMinutes == nil || *k.JobActiveDeadlineMinutes == 0 {
+		return int64Ptr(DefaultJobActiveDeadlineMinutes * 60)
+	}
+	if *k.JobActiveDeadlineMinutes < 0 {
+		return nil
+	}
+	return int64Ptr(*k.JobActiveDeadlineMinutes * 60)
+}
+
 func int32Ptr(i int) *int32 {
 	v := int32(i)
+	return &v
+}
+
+func int64Ptr(i int) *int64 {
+	v := int64(i)
 	return &v
 }
 
