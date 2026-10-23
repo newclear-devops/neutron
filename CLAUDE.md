@@ -87,7 +87,7 @@ Tables auto-migrated by GORM:
 
 ### Configuration
 
-Runtime config is `config.yaml` (gitignored). Shape defined by `internal/model/config.go`: host, port, database (MySQL DSN), salt, log_url (external log platform link template with {namespace} and {podName} placeholders, optional), slowdog_url (slowdog log platform base URL, optional — when set the status page shows a per-pod 日志 link to `{slowdog_url}?pod_name={podName}`), codebase map (url/token/skip_tls_verify per platform: GitLab, Codeup), pod_codebase (pod-side codebase addresses, optional), kubernetes (kube-config path — optional for in-cluster, auto-detected via ServiceAccount; required for out-of-cluster, namespace, git-private-key secret, init-image, checkout-image, image-pull-secrets, **job-ttl-minutes** — see **Job Cleanup (TTL)**, **job-active-deadline-minutes** — see **Killing a Stuck Run (manual)**, pod-api-url), notify (IM notification config: url, corp_id, app_id, skip_tls_verify), snippets (GitLab-backed snippet store, optional), gateway (codebase API gateway backing the manual trigger toolbar's branch/tag lists, optional), dependency (shared-dependency service backing its DEP_BRANCH dropdown, optional). Most fields can be overridden via environment variables (NEUTRON_*).
+Runtime config is `config.yaml` (gitignored). Shape defined by `internal/model/config.go`: host, port, database (MySQL DSN), salt, log_url (external log platform link template with {namespace} and {podName} placeholders, optional), slowdog_url (slowdog log platform base URL, optional — when set the status page shows a per-pod 日志 link to `{slowdog_url}?pod_name={podName}`), codebase map (url/token/skip_tls_verify per platform: GitLab, Codeup), pod_codebase (pod-side codebase addresses, optional), kubernetes (kube-config path — optional for in-cluster, auto-detected via ServiceAccount; required for out-of-cluster, namespace, git-private-key secret, init-image, checkout-image, image-pull-secrets, **job-ttl-minutes** — see **Job Cleanup (TTL)**, **job-active-deadline-minutes** — see **Stuck Runs: automatic cap and manual kill**, pod-api-url), notify (IM notification config: url, corp_id, app_id, skip_tls_verify), snippets (GitLab-backed snippet store, optional), gateway (codebase API gateway backing the manual trigger toolbar's branch/tag lists, optional), dependency (shared-dependency service backing its DEP_BRANCH dropdown, optional). Most fields can be overridden via environment variables (NEUTRON_*).
 
 ### Job Cleanup (TTL)
 
@@ -116,7 +116,7 @@ kubectl get jobs -o name | grep '^job\.batch/neutron-' | \
 
 Before doing that, check whether any row within `ListUncompletedJobs`' 7-day window is still uncompleted (`completed = 0`) — those are precisely the rows that would lose their last source of truth. Let the reconciler close them out first (it does so within ~1h of the K8s Job going terminal), then patch.
 
-### Killing a Stuck Run (manual)
+### Stuck Runs: automatic cap and manual kill
 
 A run can hang: still active in Kubernetes, never reaching a terminal state (a wedged step, a build that never returns, a Pod that never pulls its image). `TTLSecondsAfterFinished` does not help — it only applies to Jobs that have **finished** — and the reconciler skips Jobs that are not terminal, so such a run keeps its Pods forever and keeps counting as a running sibling in `handleRunningSiblings`.
 

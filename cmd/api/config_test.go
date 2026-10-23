@@ -14,6 +14,7 @@ func TestApplyEnvOverridesOnEmptyConfig(t *testing.T) {
 	t.Setenv("NEUTRON_GITLAB_TOKEN", "tok")
 	t.Setenv("NEUTRON_CODEUP_WEBHOOK_URL", "https://neutron.example.com")
 	t.Setenv("NEUTRON_JOB_TTL_MINUTES", "60")
+	t.Setenv("NEUTRON_JOB_ACTIVE_DEADLINE_MINUTES", "90")
 
 	var config model.Config
 	applyEnvOverrides(&config)
@@ -29,6 +30,9 @@ func TestApplyEnvOverridesOnEmptyConfig(t *testing.T) {
 	}
 	if config.Kubernetes.JobTtlMinutes == nil || *config.Kubernetes.JobTtlMinutes != 60 {
 		t.Errorf("job ttl = %v, want 60", config.Kubernetes.JobTtlMinutes)
+	}
+	if config.Kubernetes.JobActiveDeadlineMinutes == nil || *config.Kubernetes.JobActiveDeadlineMinutes != 90 {
+		t.Errorf("job active deadline minutes = %v, want 90", config.Kubernetes.JobActiveDeadlineMinutes)
 	}
 }
 

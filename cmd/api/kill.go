@@ -14,14 +14,16 @@ import (
 )
 
 // Manual kill for a run that is stuck: still active in Kubernetes, neither
-// finishing nor failing, so neither the TTL cleanup (#32) nor the reconciler
-// ever touches it. TTL only applies to Jobs that have *finished*, and the
-// reconciler skips Jobs that are not terminal — a hung Job therefore keeps its
-// Pods forever, and keeps counting as a running sibling.
+// finishing nor failing. The TTL cleanup (#32) only applies to Jobs that have
+// *finished*, and the reconciler skips Jobs that are not terminal — a hung Job
+// therefore keeps its Pods forever, and keeps counting as a running sibling.
 //
-// No automatic timeout is offered instead: pipeline durations vary too much for
-// any global deadline to be safe (it would eventually kill a legitimately slow
-// build), so termination stays an explicit, confirmed user action.
+// Every Job also carries an ActiveDeadlineSeconds cap (resolved by
+// model.KubernetesConfig.EffectiveJobActiveDeadlineSeconds) that Kubernetes
+// enforces on its own: past it, the Pods are terminated and the Job is failed,
+// which the reconciler then closes out and notifies. Kill is how a run is
+// stopped *before* that cap — and the only way to stop one at all when the cap
+// is disabled by configuring a negative value.
 
 // handleKill force-terminates a still-running job.
 // POST /api/jobs/:jobName/kill
