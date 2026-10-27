@@ -812,12 +812,52 @@
             '</div>';
     }
 
+    // --- Favorites (browser-local; stored in localStorage, no user account) ---
+    var FAV_KEY = 'neutron_favorites';
+    var _favOnly = false;
+    function getFavorites() {
+        try {
+            var arr = JSON.parse(localStorage.getItem(FAV_KEY) || '[]');
+            return Array.isArray(arr) ? arr : [];
+        } catch (e) { return []; }
+    }
+    function isFavorite(id) {
+        return getFavorites().indexOf(String(id)) >= 0;
+    }
+    function setFavorite(id, on) {
+        id = String(id);
+        var favs = getFavorites();
+        var i = favs.indexOf(id);
+        if (on && i < 0) favs.push(id);
+        if (!on && i >= 0) favs.splice(i, 1);
+        try { localStorage.setItem(FAV_KEY, JSON.stringify(favs)); } catch (e) {}
+    }
+    function toggleFavorite(id) {
+        var on = !isFavorite(id);
+        setFavorite(id, on);
+        return on;
+    }
+    // Toggling from anywhere: refresh every visible star for this id, and if the
+    // Projects list is on screen, re-apply its filter (a removed favorite must
+    // drop out while "My Favorites" is active).
+    window.toggleProjectFavorite = function(id) {
+        var on = toggleFavorite(id);
+        var btns = document.querySelectorAll('[data-fav-id="' + String(id) + '"]');
+        for (var i = 0; i < btns.length; i++) {
+            btns[i].textContent = on ? '★' : '☆';
+            btns[i].style.color = on ? '#f5a623' : '#bbb';
+        }
+        if (document.getElementById('projectsList')) applyProjectFilter();
+    };
+
     // --- Projects List ---
     function renderProjects() {
+        _favOnly = false;
         app.innerHTML =
             '<p class="page-title">Registered <b>Projects</b></p>' +
-            '<div style="margin-bottom:20px">' +
+            '<div style="margin-bottom:20px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">' +
                 '<input type="text" id="searchInput" placeholder="Filter by repository URL..." style="max-width:400px">' +
+                '<button id="favToggle" class="btn btn-outline" style="padding:6px 16px;font-size:1.3rem;margin-top:0" onclick="toggleFavFilter()">★ My Favorites</button>' +
             '</div>' +
             '<div id="projectsList"><p style="color:#999">Loading...</p></div>';
 
@@ -829,20 +869,34 @@
                     return;
                 }
                 window._projects = data.projects || [];
-                renderProjectsList(window._projects);
+                applyProjectFilter();
 
                 document.getElementById('searchInput').addEventListener('input', function() {
-                    var q = this.value.toLowerCase();
-                    var filtered = window._projects.filter(function(p) {
-                        return !q || (p.RepoUrl && p.RepoUrl.toLowerCase().indexOf(q) >= 0);
-                    });
-                    renderProjectsList(filtered);
+                    applyProjectFilter();
                 });
             })
             .catch(function(err) {
                 document.getElementById('projectsList').innerHTML = '<p style="color:#c00">Failed to load: ' + escHtml(String(err)) + '</p>';
             });
     }
+
+    function applyProjectFilter() {
+        var box = document.getElementById('searchInput');
+        var q = (box ? box.value : '').toLowerCase();
+        var visible = (window._projects || []).filter(function(p) {
+            if (_favOnly && !isFavorite(p.Id)) return false;
+            if (q && !(p.RepoUrl && p.RepoUrl.toLowerCase().indexOf(q) >= 0)) return false;
+            return true;
+        });
+        renderProjectsList(visible);
+    }
+
+    window.toggleFavFilter = function() {
+        _favOnly = !_favOnly;
+        var btn = document.getElementById('favToggle');
+        if (btn) btn.innerHTML = _favOnly ? '☆ All Projects' : '★ My Favorites';
+        applyProjectFilter();
+    };
 
     function renderProjectsList(projects) {
         var el = document.getElementById('projectsList');
@@ -851,7 +905,7 @@
             return;
         }
 
-        var html = '<table><thead><tr><th>Type</th><th>Name</th><th>Repository</th><th>Actions</th></tr></thead><tbody>';
+        var html = '<table><thead><tr><th>Type</th><th>Name</th><th>Repository</th><th>Actions</th><th style="width:48px;text-align:center"></th></tr></thead><tbody>';
         for (var i = 0; i < projects.length; i++) {
             var p = projects[i];
             var httpUrl = sshToHttp(p.RepoUrl, p.WebhookType);
@@ -859,7 +913,14 @@
             var repoHtml = httpUrl
                 ? '<a target="_blank" href="' + escAttr(httpUrl) + '">' + escHtml(p.RepoUrl) + '</a>'
                 : escHtml(p.RepoUrl);
-            html += '<tr><td>' + escHtml(p.WebhookType) + '</td><td><b>' + escHtml(repoName) + '</b></td><td>' + repoHtml + '</td><td><a href="#/project/' + escAttr(p.Id) + '" class="btn btn-outline" style="padding:6px 16px;font-size:1.3rem">View</a></td></tr>';
+            var fav = isFavorite(p.Id);
+            html += '<tr>' +
+                '<td>' + escHtml(p.WebhookType) + '</td>' +
+                '<td><b>' + escHtml(repoName) + '</b></td>' +
+                '<td>' + repoHtml + '</td>' +
+                '<td><a href="#/project/' + escAttr(p.Id) + '" class="btn btn-outline" style="padding:6px 16px;font-size:1.3rem">View</a></td>' +
+                '<td style="text-align:center"><button data-fav-id="' + escAttr(p.Id) + '" onclick="toggleProjectFavorite(' + JSON.stringify(p.Id) + ')" title="Toggle favorite" style="background:none;border:none;cursor:pointer;font-size:1.8rem;line-height:1;color:' + (fav ? '#f5a623' : '#bbb') + '">' + (fav ? '★' : '☆') + '</button></td>' +
+                '</tr>';
         }
         html += '</tbody></table>';
         el.innerHTML = html;
@@ -920,11 +981,13 @@
                 var repoHtml = httpUrl
                     ? '<a target="_blank" href="' + escAttr(httpUrl) + '">' + escHtml(project.RepoUrl) + '</a>'
                     : escHtml(project.RepoUrl);
+                var favOn = isFavorite(project.Id);
                 infoEl.innerHTML =
                     '<div class="card" style="margin-bottom:16px">' +
                         '<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">' +
                             '<span style="font-size:1.6rem;font-weight:700;color:#2d3748">' + escHtml(repoName) + '</span>' +
                             '<span style="font-size:1.2rem;font-weight:600;color:#999;text-transform:uppercase;letter-spacing:.5px;margin-left:8px">' + escHtml(project.WebhookType) + '</span>' +
+                            '<button data-fav-id="' + escAttr(project.Id) + '" onclick="toggleProjectFavorite(' + JSON.stringify(project.Id) + ')" title="Toggle favorite" style="margin-left:auto;background:none;border:none;cursor:pointer;font-size:1.8rem;line-height:1;color:' + (favOn ? '#f5a623' : '#bbb') + '">' + (favOn ? '★' : '☆') + '</button>' +
                         '</div>' +
                         '<div>' +
                             '<span style="font-size:1.3rem;color:#606c76">' + repoHtml + '</span>' +
