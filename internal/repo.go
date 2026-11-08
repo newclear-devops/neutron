@@ -448,12 +448,13 @@ func (r *Repository) ListUncompletedJobs(days int) ([]PipelineJob, error) {
 // outcome from the K8s Job.
 func (r *Repository) ListStuckCompletedJobs(days int) ([]PipelineJob, error) {
 	var jobs []PipelineJob
-	// Only name + status + pods are needed: name keys the K8s lookup in the
+	// Only id + name + status + pods are needed: name keys the K8s lookup in the
 	// reconciler, status decides "stuck", and pods are the rows whose phase
-	// gets written back to a terminal outcome. Pulling notify/spec (large text
-	// blobs) would inflate this per-tick scan over all recently-completed jobs
-	// for nothing.
-	err := r.db.Select("name", "status").
+	// gets written back to a terminal outcome. id must be selected: GORM's
+	// Preload matches pods by the parent's primary key, so omitting it loads no
+	// pods at all. Pulling notify/spec (large text blobs) would inflate this
+	// per-tick scan over all recently-completed jobs for nothing.
+	err := r.db.Select("id", "name", "status").
 		Preload("Pods").
 		Where("completed = ? AND "+jobTimestampExpr()+" >= ?", true, cutoffDays(days)).
 		Order("id DESC").Find(&jobs).Error
