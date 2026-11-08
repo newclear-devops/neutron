@@ -78,6 +78,81 @@ func TestJobTerminalTime(t *testing.T) {
 	}
 }
 
+func TestResolveHealOutcome(t *testing.T) {
+	terminalSuccess := `{"succeeded":1,"final":true}`
+	terminalFail := `{"failed":1,"final":true}`
+	active := `{"active":1}`
+	empty := ""
+
+	cases := []struct {
+		name     string
+		k8sJob   *batchv1.Job
+		status   string
+		wantFail bool
+		wantOK   bool
+	}{
+		{
+			name:   "k8s job succeeded wins",
+			k8sJob: &batchv1.Job{Status: batchv1.JobStatus{Succeeded: 1}},
+			status: active,
+			wantOK: true,
+		},
+		{
+			name:     "k8s job failed wins",
+			k8sJob:   &batchv1.Job{Status: batchv1.JobStatus{Failed: 1}},
+			status:   terminalSuccess,
+			wantFail: true,
+			wantOK:   true,
+		},
+		{
+			name:   "k8s job gone, db status succeeded",
+			status: terminalSuccess,
+			wantOK: true,
+		},
+		{
+			name:     "k8s job gone, db status failed",
+			status:   terminalFail,
+			wantFail: true,
+			wantOK:   true,
+		},
+		{
+			name:   "k8s job gone, db status active only",
+			status: active,
+			wantOK: false,
+		},
+		{
+			name:   "k8s job gone, empty db status",
+			status: empty,
+			wantOK: false,
+		},
+		{
+			name:   "k8s job gone, corrupted db status",
+			status: `{not-json`,
+			wantOK: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			failed, ok := resolveHealOutcome(tc.k8sJob, tc.status)
+			if ok != tc.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, tc.wantOK)
+			}
+			if ok && failed != tc.wantFail {
+				t.Errorf("failed = %v, want %v", failed, tc.wantFail)
+			}
+		})
+	}
+}
+
+func TestTerminalPodPhase(t *testing.T) {
+	if got := terminalPodPhase(false); got != "Succeeded" {
+		t.Errorf("terminalPodPhase(false) = %q, want Succeeded", got)
+	}
+	if got := terminalPodPhase(true); got != "Failed" {
+		t.Errorf("terminalPodPhase(true) = %q, want Failed", got)
+	}
+}
+
 func TestK8sFailureReason(t *testing.T) {
 	cases := []struct {
 		name   string

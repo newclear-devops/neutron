@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"time"
@@ -113,28 +114,81 @@ func (s *Server) healStuckCompletedJobs() {
 		return
 	}
 	for _, j := range jobs {
+		// Derive the terminal outcome from the K8s Job when possible. When the
+		// Job is already gone (TTL-cleaned) the DB status is the only source of
+		// truth left — and if it is terminal, the pod phases can still be
+		// written back from it.
 		k8sJob, err := s.clientSet.BatchV1().Jobs(s.config.Kubernetes.Namespace).Get(context.Background(), j.Name, metav1.GetOptions{})
 		if err != nil {
-			// Deleted or not visible in K8s — nothing to derive from. Such a
-			// row (e.g. K8s Job TTL-cleaned before this ran) will remain
-			// non-terminal; this is a known limitation with no source of truth.
-			// Note: it therefore stays stuck and is re-fetched every tick, but the
-			// 7-day recency window bounds the steady-state cost.
-			continue
-		}
-		if _, ok := jobTerminalTime(&k8sJob.Status); !ok {
+			// Deleted or not visible in K8s — fall through to the DB-status
+			// branch below so pod phases can still converge when the status is
+			// already terminal.
+			k8sJob = nil
+		} else if _, ok := jobTerminalTime(&k8sJob.Status); !ok {
 			// No CompletionTime and no JobFailed condition (e.g. a job deleted
 			// mid-run, or an unusual terminal state): no outcome to derive.
+			k8sJob = nil
+		}
+
+		// Derive the terminal outcome. The K8s Job is authoritative when it is
+		// still around and terminal; when it is gone (TTL-cleaned) or not
+		// terminal, the DB status is the last record — if it already carries a
+		// terminal outcome (the runner reported it before the Job was cleaned
+		// up), pod phases can still converge from it. If neither source has an
+		// outcome, the row stays stuck (re-fetched every tick, bounded by the
+		// 7-day recency window).
+		failed, ok := resolveHealOutcome(k8sJob, j.Status)
+		if !ok {
 			continue
 		}
-		failed := k8sJob.Status.Succeeded == 0
-		s.updateTerminalStatus(j.Name, k8sJob, failed)
+		if k8sJob != nil {
+			s.updateTerminalStatus(j.Name, k8sJob, failed)
+		}
+
+		// Write back terminal pod phases. The runner's final-report goroutine
+		// polls the K8s pod for at most ~10s and can give up before the pod
+		// reaches a terminal phase; once the job is marked completed the status
+		// page serves DB data only, so the phase would otherwise stay "Running"
+		// forever even though the job succeeded.
+		terminalPhase := terminalPodPhase(failed)
+		for _, pod := range j.Pods {
+			if pod.Phase != "Succeeded" && pod.Phase != "Failed" {
+				_ = s.repo.UpdatePodStatus(pod.PodUid, terminalPhase)
+			}
+		}
+
 		outcome := "succeeded"
 		if failed {
 			outcome = "failed"
 		}
 		log.Printf("reconciler: healed stuck completed job %s -> %s", j.Name, outcome)
 	}
+}
+
+// resolveHealOutcome decides the terminal outcome for a stuck completed job.
+// k8sJob may be nil (deleted or not terminal); in that case the persisted
+// status JSON is consulted. Returns ok=false when no terminal outcome can be
+// derived from either source.
+func resolveHealOutcome(k8sJob *batchv1.Job, statusJSON string) (failed bool, ok bool) {
+	if k8sJob != nil {
+		return k8sJob.Status.Succeeded == 0, true
+	}
+	var status internal.JobStatus
+	if err := json.Unmarshal([]byte(statusJSON), &status); err != nil {
+		return false, false
+	}
+	if status.Succeeded == 0 && status.Failed == 0 {
+		return false, false
+	}
+	return status.Failed > 0, true
+}
+
+// terminalPodPhase returns the K8s pod phase a terminal job outcome maps to.
+func terminalPodPhase(failed bool) string {
+	if failed {
+		return "Failed"
+	}
+	return "Succeeded"
 }
 
 // updateTerminalStatus writes a terminal JobStatus derived from K8s Job

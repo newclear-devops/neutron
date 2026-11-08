@@ -448,10 +448,14 @@ func (r *Repository) ListUncompletedJobs(days int) ([]PipelineJob, error) {
 // outcome from the K8s Job.
 func (r *Repository) ListStuckCompletedJobs(days int) ([]PipelineJob, error) {
 	var jobs []PipelineJob
-	// Only name + status are needed: name keys the K8s lookup in the reconciler
-	// and status decides "stuck". Pulling notify/spec (large text blobs) would
-	// inflate this per-tick scan over all recently-completed jobs for nothing.
-	err := r.db.Select("name", "status").
+	// Only id + name + status + pods are needed: name keys the K8s lookup in the
+	// reconciler, status decides "stuck", and pods are the rows whose phase
+	// gets written back to a terminal outcome. id must be selected: GORM's
+	// Preload matches pods by the parent's primary key, so omitting it loads no
+	// pods at all. Pulling notify/spec (large text blobs) would inflate this
+	// per-tick scan over all recently-completed jobs for nothing.
+	err := r.db.Select("id", "name", "status").
+		Preload("Pods").
 		Where("completed = ? AND "+jobTimestampExpr()+" >= ?", true, cutoffDays(days)).
 		Order("id DESC").Find(&jobs).Error
 	if err != nil {
@@ -459,11 +463,33 @@ func (r *Repository) ListStuckCompletedJobs(days int) ([]PipelineJob, error) {
 	}
 	stuck := make([]PipelineJob, 0, len(jobs))
 	for _, j := range jobs {
-		if isStuckJobStatus(j.Status) {
+		if needsHeal(j.Status, j.Pods) {
 			stuck = append(stuck, j)
 		}
 	}
 	return stuck, nil
+}
+
+// needsHeal reports whether a completed job still needs the reconciler's heal
+// pass. Two shapes qualify:
+//
+//  1. The status has no terminal outcome (isStuckJobStatus) — the runner never
+//     reported a final status, so the outcome must be derived from the K8s Job.
+//  2. The status is terminal but a pod phase is not — the runner's final-report
+//     goroutine polls the K8s pod for only ~10s and can give up before the pod
+//     reaches a terminal phase; once the job is marked completed the status
+//     page serves DB data only, so the phase would otherwise stay "Running"
+//     forever even though the job succeeded.
+func needsHeal(statusJSON string, pods []PipelinePod) bool {
+	if isStuckJobStatus(statusJSON) {
+		return true
+	}
+	for _, p := range pods {
+		if p.Phase != "Succeeded" && p.Phase != "Failed" {
+			return true
+		}
+	}
+	return false
 }
 
 // isStuckJobStatus reports whether a persisted status value represents a job

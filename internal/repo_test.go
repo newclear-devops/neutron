@@ -34,6 +34,65 @@ func TestIsStuckJobStatus(t *testing.T) {
 	}
 }
 
+func TestNeedsHeal(t *testing.T) {
+	terminalSuccess := mustJSON(t, JobStatus{Succeeded: 1})
+	active := mustJSON(t, JobStatus{Active: 1})
+
+	cases := []struct {
+		name   string
+		status string
+		pods   []PipelinePod
+		want   bool
+	}{
+		{
+			name:   "non-terminal status needs heal",
+			status: active,
+			want:   true,
+		},
+		{
+			name:   "empty status needs heal",
+			status: "",
+			want:   true,
+		},
+		{
+			name:   "terminal status with terminal pods is fine",
+			status: terminalSuccess,
+			pods:   []PipelinePod{{Phase: "Succeeded"}},
+			want:   false,
+		},
+		{
+			name:   "terminal status with no pods is fine",
+			status: terminalSuccess,
+			want:   false,
+		},
+		{
+			name:   "terminal status with running pod needs heal",
+			status: terminalSuccess,
+			pods:   []PipelinePod{{Phase: "Running"}},
+			want:   true,
+		},
+		{
+			name:   "terminal status with pending pod needs heal",
+			status: terminalSuccess,
+			pods:   []PipelinePod{{Phase: "Pending"}},
+			want:   true,
+		},
+		{
+			name:   "terminal status with failed pod is fine",
+			status: terminalSuccess,
+			pods:   []PipelinePod{{Phase: "Failed"}},
+			want:   false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := needsHeal(tc.status, tc.pods); got != tc.want {
+				t.Errorf("needsHeal(%q, %+v) = %v, want %v", tc.status, tc.pods, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestStatusSearchClause(t *testing.T) {
 	cases := []struct {
 		word   string
